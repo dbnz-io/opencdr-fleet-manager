@@ -1,0 +1,7 @@
+{
+  "method": "PUT",
+  "path": "/lists/approved-admins",
+  "query": {},
+  "body": {"list_id":"approved-admins","matcher":"exact","value_type":"iam_user","values":["security-admin"],"expected_rev":3},
+  "agent_ids": ["account-a-prod"]
+}

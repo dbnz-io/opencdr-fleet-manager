@@ -1,0 +1,218 @@
+service: opencdr-fleet-manager
+frameworkVersion: '4.45.0'
+configValidationMode: error
+
+params:
+  default:
+    securityAccountId: ${env:SECURITY_ACCOUNT_ID}
+    pollingEnabled: 'true'
+    securityProfile: standard
+    allowedAgentHosts: ''
+    snapshotRetentionHours: '24'
+
+package:
+  artifact: build/fleet-manager.zip
+
+provider:
+  name: aws
+  runtime: python3.12
+  architecture: arm64
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  timeout: 28
+  memorySize: 512
+  logRetentionInDays: 30
+  versionFunctions: false
+  iam:
+    role:
+      mode: perFunction
+  stackTags:
+    Project: opencdr-fleet-manager
+    Stage: ${self:provider.stage}
+  tags:
+    Project: opencdr-fleet-manager
+    Stage: ${self:provider.stage}
+  environment:
+    SECURITY_ACCOUNT_ID: ${param:securityAccountId}
+    FLEET_STAGE: ${self:provider.stage}
+    REGISTRY_TABLE: !Ref RegistryTable
+    STATUS_TABLE: !Ref StatusTable
+    CACHE_TABLE: !Ref ConfigurationTable
+    CREDENTIAL_PREFIX: /opencdr-fleet-manager/${self:provider.stage}/agents
+    POLL_QUEUE_URL: !Ref PollQueue
+    SNAPSHOT_RETENTION_HOURS: ${param:snapshotRetentionHours}
+    STALE_AFTER_SECONDS: '180'
+    ALLOWED_AGENT_HOSTS: ${param:allowedAgentHosts}
+
+custom:
+  registryRead: &registryRead
+    Effect: Allow
+    Action: [dynamodb:GetItem, dynamodb:Query]
+    Resource:
+      - !GetAtt RegistryTable.Arn
+      - !Sub '${RegistryTable.Arn}/index/agents'
+  registryWrite: &registryWrite
+    Effect: Allow
+    Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query]
+    Resource:
+      - !GetAtt RegistryTable.Arn
+      - !Sub '${RegistryTable.Arn}/index/agents'
+  statusRead: &statusRead
+    Effect: Allow
+    Action: [dynamodb:GetItem]
+    Resource: !GetAtt StatusTable.Arn
+  secretsRead: &secretsRead
+    Effect: Allow
+    Action: ssm:GetParameter
+    Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/opencdr-fleet-manager/${self:provider.stage}/agents/*/read-key'
+  sendPoll: &sendPoll
+    Effect: Allow
+    Action: sqs:SendMessage
+    Resource: !GetAtt PollQueue.Arn
+
+functions:
+  api:
+    handler: opencdr_fleet.handlers.api
+    iamRoleStatements:
+      - *registryWrite
+      - *statusRead
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query]
+        Resource: !GetAtt ConfigurationTable.Arn
+      - *secretsRead
+      - Effect: Allow
+        Action: ssm:GetParameter
+        Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/opencdr-fleet-manager/${self:provider.stage}/agents/*/write-key'
+      - *sendPoll
+    events:
+      - http: {path: v1/status, method: get, authorizer: aws_iam}
+      - http: {path: v1/statuses, method: get, authorizer: aws_iam}
+      - http: {path: v1/agents, method: get, authorizer: aws_iam}
+      - http: {path: v1/agents, method: post, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}', method: put, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/refresh', method: post, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/configuration', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/api/{proxy+}', method: any, authorizer: aws_iam}
+      - http: {path: v1/fleet/read, method: post, authorizer: aws_iam}
+      - http: {path: v1/fleet/invoke, method: post, authorizer: aws_iam}
+  schedule:
+    handler: opencdr_fleet.handlers.schedule
+    timeout: 55
+    iamRoleStatements: [*registryRead, *sendPoll]
+    events:
+      - schedule:
+          rate: rate(1 minute)
+          enabled: ${strToBool(${param:pollingEnabled})}
+  poll:
+    handler: opencdr_fleet.handlers.worker
+    timeout: 55
+    reservedConcurrency: 20
+    iamRoleStatements:
+      - *registryWrite
+      - *statusRead
+      - *secretsRead
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt StatusTable.Arn
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:BatchWriteItem]
+        Resource: !GetAtt ConfigurationTable.Arn
+    events:
+      - sqs:
+          arn: !GetAtt PollQueue.Arn
+          batchSize: 1
+          maximumConcurrency: 20
+          functionResponseType: ReportBatchItemFailures
+
+resources:
+  Conditions:
+    Hardened: !Equals ['${param:securityProfile}', hardened]
+  Resources:
+    RegistryTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-agents
+        BillingMode: PAY_PER_REQUEST
+        SSESpecification: {SSEEnabled: true}
+        PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: !If [Hardened, true, false]}
+        AttributeDefinitions:
+          - {AttributeName: id, AttributeType: S}
+          - {AttributeName: record_type, AttributeType: S}
+          - {AttributeName: agent_id, AttributeType: S}
+        KeySchema: [{AttributeName: id, KeyType: HASH}]
+        GlobalSecondaryIndexes:
+          - IndexName: agents
+            KeySchema: [{AttributeName: record_type, KeyType: HASH}, {AttributeName: agent_id, KeyType: RANGE}]
+            Projection: {ProjectionType: ALL}
+    StatusTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-status
+        BillingMode: PAY_PER_REQUEST
+        SSESpecification: {SSEEnabled: true}
+        PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: !If [Hardened, true, false]}
+        AttributeDefinitions: [{AttributeName: agent_id, AttributeType: S}]
+        KeySchema: [{AttributeName: agent_id, KeyType: HASH}]
+    ConfigurationTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-configuration
+        BillingMode: PAY_PER_REQUEST
+        SSESpecification: {SSEEnabled: true}
+        PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: !If [Hardened, true, false]}
+        TimeToLiveSpecification: {AttributeName: expires_at, Enabled: true}
+        AttributeDefinitions: [{AttributeName: pk, AttributeType: S}, {AttributeName: sk, AttributeType: S}]
+        KeySchema: [{AttributeName: pk, KeyType: HASH}, {AttributeName: sk, KeyType: RANGE}]
+    PollQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        VisibilityTimeout: 360
+        MessageRetentionPeriod: 3600
+        SqsManagedSseEnabled: true
+        RedrivePolicy: {deadLetterTargetArn: !GetAtt PollDeadLetterQueue.Arn, maxReceiveCount: 3}
+    PollDeadLetterQueue:
+      Type: AWS::SQS::Queue
+      Properties: {MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true}
+    PollDeadLetterAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Poll failures require investigation; do not replay stale write requests.
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Dimensions: [{Name: QueueName, Value: !GetAtt PollDeadLetterQueue.QueueName}]
+        Statistic: Sum
+        Period: 60
+        EvaluationPeriods: 1
+        Threshold: 0
+        ComparisonOperator: GreaterThanThreshold
+        TreatMissingData: notBreaching
+    PollLagAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Polling backlog exceeds freshness budget. Review worker capacity and agent latency.
+        Namespace: AWS/SQS
+        MetricName: ApproximateAgeOfOldestMessage
+        Dimensions: [{Name: QueueName, Value: !GetAtt PollQueue.QueueName}]
+        Statistic: Maximum
+        Period: 60
+        EvaluationPeriods: 2
+        Threshold: 120
+        ComparisonOperator: GreaterThanThreshold
+        TreatMissingData: notBreaching
+  Outputs:
+    FleetManagerApiUrl:
+      Value: !Sub 'https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${self:provider.stage}'
+    FleetManagerApiId: {Value: !Ref ApiGatewayRestApi}
+    SecurityAccountId: {Value: !Ref AWS::AccountId}
+    AgentCredentialPrefix: {Value: '/opencdr-fleet-manager/${self:provider.stage}/agents'}
+    RegistryTableName: {Value: !Ref RegistryTable}
+    StatusTableName: {Value: !Ref StatusTable}
+    ConfigurationTableName: {Value: !Ref ConfigurationTable}
+    PollDeadLetterQueueUrl: {Value: !Ref PollDeadLetterQueue}

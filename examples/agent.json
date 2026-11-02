@@ -1,0 +1,12 @@
+{
+  "agent_id": "account-a-prod",
+  "name": "Account A production",
+  "account_id": "111111111111",
+  "region": "us-east-1",
+  "stage": "prod",
+  "api_url": "https://replace-me.execute-api.us-east-1.amazonaws.com/prod",
+  "enabled": true,
+  "allow_writes": false,
+  "settings_ids": ["global"],
+  "integration_ids": []
+}

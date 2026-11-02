@@ -1,0 +1,14 @@
+{
+  "name": "opencdr-fleet-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Serverless infrastructure for the organization-local OpenCDR fleet manager",
+  "scripts": {
+    "package": "python3 scripts/package.py && serverless package",
+    "deploy": "python3 scripts/deploy.py"
+  },
+  "devDependencies": {
+    "serverless": "4.45.0"
+  },
+  "license": "MPL-2.0"
+}

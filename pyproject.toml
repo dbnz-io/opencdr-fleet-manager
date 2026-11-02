@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "opencdr-fleet-manager"
+version = "0.1.0"
+description = "Optional Serverless fleet manager for organization-local OpenCDR agents"
+requires-python = ">=3.12"
+readme = "README.md"
+license = "MPL-2.0"
+license-files = ["LICENSE"]
+dependencies = ["boto3==1.43.119"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "moto[dynamodb,ssm,sqs,apigateway]>=5,<6", "ruff>=0.12,<1", "PyYAML>=6,<7"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/opencdr_fleet"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

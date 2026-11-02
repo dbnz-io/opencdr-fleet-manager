@@ -1,0 +1,796 @@
+openapi: 3.0.3
+info:
+  title: OpenCDR Fleet Manager
+  version: 1.0.0
+  description: Organization-local multi-account management. Core remains authoritative;
+    cached observations are explicitly timestamped. API Gateway uses IAM/SigV4.
+security:
+- awsSigV4: []
+paths:
+  /v1/status:
+    get:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /v1/statuses:
+    get:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+      - name: next_token
+        in: query
+        schema:
+          type: string
+  /v1/agents:
+    get:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+      - name: next_token
+        in: query
+        schema:
+          type: string
+    post:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '201':
+          description: Registration persisted; inspect refresh_queued.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Registration'
+  /v1/agents/{agent_id}:
+    parameters:
+    - &id001
+      name: agent_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: ^[a-z0-9][a-z0-9-]{0,62}$
+    get:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+    put:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Registration'
+  /v1/agents/{agent_id}/refresh:
+    parameters:
+    - *id001
+    post:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '202':
+          description: Read-only poll queued; not yet completed.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /v1/agents/{agent_id}/configuration:
+    parameters:
+    - *id001
+    get:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+      - name: next_token
+        in: query
+        schema:
+          type: string
+      - name: kind
+        in: query
+        schema:
+          type: string
+          enum:
+          - rule
+          - list
+          - setting
+          - ir_role
+          - integration
+          - catalog
+  /v1/fleet/read:
+    post:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '207':
+          description: Inspect every target result; this is not an atomic success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  atomic:
+                    type: boolean
+                    enum:
+                    - false
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForwardResult'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForwardRequest'
+  /v1/fleet/invoke:
+    post:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '207':
+          description: Inspect every target result; this is not an atomic success.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  atomic:
+                    type: boolean
+                    enum:
+                    - false
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ForwardResult'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForwardRequest'
+  /v1/agents/{agent_id}/api/{proxy}:
+    parameters:
+    - *id001
+    - name: proxy
+      in: path
+      required: true
+      description: Greedy Core relative route, e.g. rules/runtime-status. Only known
+        Core routes are accepted.
+      schema:
+        type: string
+    get:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+    post:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    put:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+    delete:
+      responses:
+        '200':
+          description: Result or Core proxy envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '403':
+          description: IAM or agent write permissions refused
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '409':
+          description: Revision conflict or identity mismatch
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '502':
+          description: Agent unavailable or invalid response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+components:
+  securitySchemes:
+    awsSigV4:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-amazon-apigateway-authtype: awsSigv4
+  schemas:
+    Registration:
+      type: object
+      additionalProperties: false
+      required:
+      - agent_id
+      - account_id
+      - region
+      - stage
+      - api_url
+      properties:
+        agent_id:
+          type: string
+        name:
+          type: string
+        account_id:
+          type: string
+          pattern: ^[0-9]{12}$
+        region:
+          type: string
+        stage:
+          type: string
+        api_url:
+          type: string
+          format: uri
+        enabled:
+          type: boolean
+          default: true
+        allow_writes:
+          type: boolean
+          default: false
+        settings_ids:
+          type: array
+          items:
+            type: string
+          default:
+          - global
+        integration_ids:
+          type: array
+          items:
+            type: string
+          default: []
+        expected_rev:
+          type: integer
+          minimum: 1
+          description: Required for registration PUT; not agent resource revision.
+    ForwardRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - agent_ids
+      - path
+      properties:
+        agent_ids:
+          type: array
+          minItems: 1
+          maxItems: 8
+          uniqueItems: true
+          items:
+            type: string
+        method:
+          type: string
+          enum:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          default: GET
+        path:
+          type: string
+          description: Core relative path, without query or URL.
+        query:
+          type: object
+          additionalProperties: true
+        body:
+          type: object
+          additionalProperties: true
+    ForwardResult:
+      type: object
+      required:
+      - agent_id
+      - status_code
+      additionalProperties: true
+      properties:
+        agent_id:
+          type: string
+        status_code:
+          type: integer
+        body:
+          type: object
+          nullable: true
+          additionalProperties: true
+        attempted:
+          type: boolean
+        error_code:
+          type: string
+        outcome:
+          type: string
+          enum:
+          - not_sent
+          - unknown
+          - failed
+        body_omitted:
+          type: boolean
+        refresh_queued:
+          type: boolean
