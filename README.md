@@ -49,6 +49,18 @@ web, opencdr-deploy and MCP applications still need their fleet connection adapt
 this repository does not silently redirect their existing direct-Core connections.
 Cases, triage, assignments and approvals are not migrated into this first release.
 
+## Install the Python package
+
+```bash
+python -m pip install opencdr-fleet-manager
+python -c "import opencdr_fleet; print(opencdr_fleet.__version__)"
+```
+
+The PyPI package provides the Python service modules. For AWS deployment and
+operator commands, use the matching source release and the Serverless workflow
+below. The source distribution also includes the deployment templates, operator
+scripts and locked requirements.
+
 ## Deploy into the security account
 
 You need Python 3.12+, Node 22+, an AWS CLI/SSO profile with deployment permission
@@ -104,7 +116,7 @@ python scripts/fleet.py --profile security-admin --region us-east-1 request \
 Expected: `product: OpenCDR Fleet Manager`, version `0.1.0` and
 `poll_interval_seconds: 60`. The deployment profile may already be allowed to
 invoke the API; operator profiles should receive the scoped permissions in
-[access.md](docs/access.md).
+[access.md](https://github.com/dbnz-io/opencdr-fleet-manager/blob/main/docs/access.md).
 
 ## Connect an agent
 
@@ -185,7 +197,7 @@ before disabling the old key. Disabling an agent does not revoke its API keys.
 All requests below use the same signed `scripts/fleet.py ... request --url ...`
 prefix. Paths are versioned independently of Core:
 
-The machine-readable contract is [openapi.yml](openapi.yml).
+The machine-readable contract is [openapi.yml](https://github.com/dbnz-io/opencdr-fleet-manager/blob/main/openapi.yml).
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -263,8 +275,8 @@ The fleet Lambdas must be able to reach those endpoints. Private-network access,
 Core API exposure policies and client workload credentials remain deployment
 choices. No member-account AWS role is assumed during normal fleet operation.
 
-See [architecture](docs/architecture.md), [access](docs/access.md) and
-[acceptance checks](docs/acceptance.md) before connecting production agents.
+See [architecture](https://github.com/dbnz-io/opencdr-fleet-manager/blob/main/docs/architecture.md), [access](https://github.com/dbnz-io/opencdr-fleet-manager/blob/main/docs/access.md) and
+[acceptance checks](https://github.com/dbnz-io/opencdr-fleet-manager/blob/main/docs/acceptance.md) before connecting production agents.
 
 ## Development
 
@@ -280,6 +292,31 @@ version changes in `scripts/lock-runtime.py` before regenerating it. Builds incl
 only locked vendor files and `src/opencdr_fleet/*.py`; credentials, `.env`, Git
 metadata, tests and workstation build artifacts cannot enter the Lambda ZIP.
 CI validates Python 3.12–3.14 and packages the service. Deployment is operator-
-controlled; this repository has no automatic production deployment or PyPI job.
+controlled. A published GitHub release runs the dedicated PyPI workflow; no AWS
+deployment is triggered by package publication.
 
-Licensed under the [Mozilla Public License 2.0 (MPL-2.0)](LICENSE).
+## Publishing releases
+
+The PyPI publisher uses short-lived GitHub OIDC credentials and the `pypi`
+GitHub environment. It builds and checks the wheel and source distribution,
+verifies the release tag matches the package version, then publishes those exact
+artifacts. No PyPI API token is stored in GitHub.
+
+For initial setup, add a pending publisher at
+[PyPI account publishing](https://pypi.org/manage/account/publishing/):
+
+| Field | Value |
+| --- | --- |
+| PyPI project | `opencdr-fleet-manager` |
+| GitHub owner | `dbnz-io` |
+| Repository | `opencdr-fleet-manager` |
+| Workflow filename | `publish.yml` |
+| Environment | `pypi` |
+
+The first successful publication creates the PyPI project. For subsequent
+releases, update `pyproject.toml`, `opencdr_fleet.__version__` and `package.json`
+together, wait for validation, and publish a GitHub release named `v<version>`.
+The initial release is `v0.1.0`. Package publication and AWS deployment are
+separate operator actions.
+
+Licensed under the [Mozilla Public License 2.0 (MPL-2.0)](https://github.com/dbnz-io/opencdr-fleet-manager/blob/main/LICENSE).

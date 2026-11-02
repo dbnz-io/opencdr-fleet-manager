@@ -6,6 +6,17 @@ build-backend = "hatchling.build"
 name = "opencdr-fleet-manager"
 version = "0.1.0"
 description = "Optional Serverless fleet manager for organization-local OpenCDR agents"
+authors = [{name = "DBNZ"}]
+keywords = ["opencdr", "aws", "serverless", "security", "fleet-management"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Security",
+]
 requires-python = ">=3.12"
 readme = "README.md"
 license = "MPL-2.0"
@@ -13,10 +24,23 @@ license-files = ["LICENSE"]
 dependencies = ["boto3==1.43.119"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "moto[dynamodb,ssm,sqs,apigateway]>=5,<6", "ruff>=0.12,<1", "PyYAML>=6,<7"]
+dev = ["pytest>=8,<10", "moto[dynamodb,ssm,sqs,apigateway]>=5,<6", "ruff>=0.12,<1", "PyYAML>=6,<7", "build>=1.2,<2", "twine>=6,<7"]
+
+[project.urls]
+Homepage = "https://github.com/dbnz-io/opencdr-fleet-manager"
+Repository = "https://github.com/dbnz-io/opencdr-fleet-manager"
+Documentation = "https://github.com/dbnz-io/opencdr-fleet-manager/blob/main/README.md"
+Issues = "https://github.com/dbnz-io/opencdr-fleet-manager/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/opencdr_fleet"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src/opencdr_fleet", "/scripts", "/docs", "/examples", "/tests",
+  "/LICENSE", "/README.md", "/pyproject.toml", "/requirements.lock",
+  "/package.json", "/package-lock.json", "/serverless.yml", "/openapi.yml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
