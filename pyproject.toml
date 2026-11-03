@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "opencdr-fleet-manager"
-version = "0.1.0"
+version = "0.1.1"
 description = "Optional Serverless fleet manager for organization-local OpenCDR agents"
 authors = [{name = "DBNZ"}]
 keywords = ["opencdr", "aws", "serverless", "security", "fleet-management"]

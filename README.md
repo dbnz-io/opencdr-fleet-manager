@@ -44,9 +44,9 @@ flowchart LR
 - Packaging from an explicit runtime allowlist, hashed Python dependencies,
   pinned Serverless tooling, CI and an account-checked deployment script.
 
-This repository implements the service and a signed operator client. The existing
-web, opencdr-deploy and MCP applications still need their fleet connection adapters;
-this repository does not silently redirect their existing direct-Core connections.
+This repository implements the service. OpenCDR Deploy provides its installed
+operational CLI, and compatible web/MCP clients use explicit fleet connection
+adapters. Existing direct-Core connections are never silently redirected.
 Cases, triage, assignments and approvals are not migrated into this first release.
 
 ## Install the Python package
@@ -61,177 +61,88 @@ operator commands, use the matching source release and the Serverless workflow
 below. The source distribution also includes the deployment templates, operator
 scripts and locked requirements.
 
-## Deploy into the security account
+## Install and manage the service
 
-You need Python 3.12+, Node 22+, an AWS CLI/SSO profile with deployment permission
-in the security account, and the Serverless Framework authentication required by
-your organization. Use an existing role or IAM Identity Center profile.
+Use **OpenCDR Deploy 0.6.0+** as the user-facing CLI. It links to this repository
+and manages the source checkout, locked build tools and Serverless deployment for
+you. You can run it from any directory; no manual fleet-manager clone or `scripts/`
+path is needed.
 
 ```bash
-git clone https://github.com/dbnz-io/opencdr-fleet-manager.git
-cd opencdr-fleet-manager
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install --require-hashes -r requirements.lock
-python -m pip install --no-deps -e .
-npm ci
-
+python -m pip install --upgrade 'opencdr-deploy>=0.6.0'
 aws sso login --profile security-admin
-aws sts get-caller-identity --profile security-admin
+opencdr-deploy fleet deploy security-prod \
+  --profile security-admin --security-account-id 222222222222 \
+  --region us-east-1 --stage prod \
+  --package-only --output /tmp/opencdr-fleet-reviewed
 ```
 
-Check that the printed account is your security account. The account ID below is
-an example; replace it with yours. This command creates AWS resources:
+Review `/tmp/opencdr-fleet-reviewed/cloudformation-template-update-stack.json`.
+**`--package-only` builds local artifacts and does not create a stack.** Deploy
+that exact package and check the live manager:
 
 ```bash
-python scripts/deploy.py \
-  --profile security-admin \
-  --security-account-id 222222222222 \
-  --region us-east-1 \
-  --stage prod
+opencdr-deploy fleet deploy security-prod --artifact /tmp/opencdr-fleet-reviewed
+opencdr-deploy fleet status --fleet security-prod
 ```
 
-The script refuses a mismatched AWS account, builds the hash-locked Lambda ZIP,
-compiles the Serverless package and deploys that exact package. Use
-`--package-only` to stop before deployment and review `.serverless/cloudformation-template-update-stack.json`.
+The CLI saves the API endpoint from CloudFormation outputs. Use `fleet connect`
+with the endpoint/account/region/stage/profile to register an already deployed
+manager, and `fleet list` to inspect saved managers.
 
-Retrieve the API URL after `UPDATE_COMPLETE`/`CREATE_COMPLETE`:
+Copy [examples/agent.json](examples/agent.json) to `agent.json` and set the real Core
+account, region, stage and URL. Register it with optional credential preparation:
 
 ```bash
-aws cloudformation describe-stacks \
-  --stack-name opencdr-fleet-manager-prod \
-  --profile security-admin --region us-east-1 \
-  --query 'Stacks[0].Outputs'
+aws sso login --profile member-admin
+opencdr-deploy fleet agents register --fleet security-prod \
+  --file agent.json --core-profile member-admin
+opencdr-deploy fleet agents list --fleet security-prod
+opencdr-deploy fleet agents show member-prod --fleet security-prod
+opencdr-deploy fleet agents request member-prod GET '/rules?rule_kind=signal' --fleet security-prod
 ```
 
-Copy **FleetManagerApiUrl**, including `/prod`, into the URL used below. With a
-profile permitted to invoke the fleet API, test it:
+Use the actual `agent_id` from your document in place of `member-prod`. With
+`--core-profile`, the CLI verifies both accounts, prepares scoped API keys and
+copies them to security-account SSM without displaying the keys. Without that
+flag, registration assumes credentials were prepared separately. Start with
+`allow_writes: false`. Inspect Core's monthly management API quota before enabling
+one-minute polling; the legacy 10,000/month quota cannot support that cadence.
 
-```bash
-python scripts/fleet.py --profile security-admin --region us-east-1 request \
-  --url https://FLEET_API_ID.execute-api.us-east-1.amazonaws.com/prod \
-  GET /v1/status
-```
+The complete setup, credential rotation, revision-guarded updates, configuration
+pagination, Core API forwarding and explicit multi-agent calls are documented in
+the [OpenCDR Deploy walkthrough](https://github.com/dbnz-io/opencdr-deploy#deploy-and-operate-fleet-manager).
+IAM/SigV4 still protects every fleet route; see [access.md](docs/access.md).
+The API contract remains [openapi.yml](openapi.yml). Manager responses retain
+per-agent HTTP status, partial results and uncertain outcomes; HTTP 207 alone does
+not prove that every target succeeded.
 
-Expected: `product: OpenCDR Fleet Manager`, version `0.1.0` and
-`poll_interval_seconds: 60`. The deployment profile may already be allowed to
-invoke the API; operator profiles should receive the scoped permissions in
-[access.md](https://github.com/dbnz-io/opencdr-fleet-manager/blob/main/docs/access.md).
+### Failed first deployment and small Lambda quotas
 
-## Connect an agent
+The default worker uses shared Lambda capacity with an SQS concurrency cap of 2,
+without a fixed Lambda reservation. This supports accounts whose regional Lambda
+quota starts at 10. Larger fleets can set `--poll-concurrency` after reviewing
+their quota, other workloads and queue backlog. The cap does not reserve capacity.
 
-Perform these steps once per Core deployment. An agent is identified by its
-account **and** region **and** stage; two stages in one account are separate agents.
+If rollback removes the stack but leaves its retained DynamoDB tables, preserve
+them and review `opencdr-deploy fleet recover` before retrying deployment. Recovery
+imports the existing tables instead of deleting data. An existing failed stack
+requires review before recovery; the tool does not delete stacks automatically.
 
-1. Copy `examples/agent.json` to `account-a.json`. Set the actual account ID,
-   region, stage and Core API URL. Choose a stable `agent_id` such as
-   `account-a-prod`. Keep `allow_writes: false` for read-only onboarding. No keys
-   belong in this file.
-2. Review the Core management API quota before enabling one-minute polling.
-   The legacy 10,000/month quota is insufficient: even `/status` alone needs
-   44,640 requests in a 31-day month. Full configuration polling needs more.
-   The companion Core change adds `managementMonthlyRequestQuota`. This parameter
-   requires a Core release containing that change; saving it against an older
-   release does not change the usage plan. For older releases, raise the existing
-   API Gateway usage-plan quota through your approved AWS configuration workflow
-   before enabling polling. For a Core release supporting the parameter, for example,
-   using your named Core installation:
+The Node `url.parse()` deprecation warning is separate from deployment success.
+An older helper's `allowedAgentHosts=` error is fixed by omitting empty CLI
+parameters. Always check the final packaging/deployment result. Package-only
+success produces no CloudFormation stack outputs.
 
-   ```bash
-   opencdr-deploy --deployment account-a-production features set \
-     managementMonthlyRequestQuota=1000000
-   ```
+### Source/developer deployment
 
-   This saves the local deployment parameter; follow your normal package/review/
-   deploy procedure to apply it. It is not an API mutation. Select a quota using
-   the observed `estimated_monthly_poll_requests`, plus headroom for operators
-   and changing configuration sizes. Older Core versions do not report quota or
-   archive/tracing state; Fleet marks those values unknown.
-3. Sign in to the agent account's profile as well as the security account's
-   profile. Prepare scoped API keys with the local onboarding tool:
-
-   ```bash
-   aws sso login --profile account-a-admin
-   python scripts/bootstrap_agent.py \
-     --security-profile security-admin --security-account-id 222222222222 \
-     --region us-east-1 --fleet-stage prod \
-     --core-profile account-a-admin --file account-a.json
-   ```
-
-   The tool verifies both profile account IDs. In the member account it creates
-   or reuses a dedicated `...-api-key-fleet-read` key and attaches it to the
-   existing Core API usage plan. It copies the value directly to security-account
-   SSM, never displaying it. If `allow_writes` is true, it also prepares a separate
-   operator key. The member-account profile needs API Gateway key/usage-plan
-   management permissions; the security profile needs `ssm:PutParameter` on this
-   fleet's credential prefix. Core scopes remain the enforcement boundary.
-4. Register the reviewed document:
-
-   ```bash
-   python scripts/fleet.py --profile security-admin --region us-east-1 request \
-     --url https://FLEET_API_ID.execute-api.us-east-1.amazonaws.com/prod \
-     POST /v1/agents --file account-a.json
-   ```
-
-   Expected: HTTP 201, agent revision 1 and `refresh_queued: true`. A false queue
-   result does not undo registration; the regular schedule will pick it up.
-5. Check status after the first poll:
-
-   ```bash
-   python scripts/fleet.py --profile security-admin --region us-east-1 request \
-     --url https://FLEET_API_ID.execute-api.us-east-1.amazonaws.com/prod \
-     GET /v1/agents/account-a-prod
-   ```
-
-   Expected: `health: healthy`, `configuration_state: ready`, verified deployment
-   identity and fresh status/configuration timestamps. A rule evaluator can still
-   be `propagating`; Fleet never substitutes its own activation verdict.
-
-If keys are managed separately, use `scripts/fleet.py ... credential --agent ...
---kind read --security-account-id ... --stage prod` to import one using hidden
-input. To rotate, import a newly issued scoped key and confirm a successful poll
-before disabling the old key. Disabling an agent does not revoke its API keys.
-
-## Operate a fleet
-
-All requests below use the same signed `scripts/fleet.py ... request --url ...`
-prefix. Paths are versioned independently of Core:
-
-The machine-readable contract is [openapi.yml](https://github.com/dbnz-io/opencdr-fleet-manager/blob/main/openapi.yml).
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/v1/status` | Fleet service liveness and version |
-| GET | `/v1/agents` or `/v1/statuses` | Paginated registry joined with cached status |
-| POST | `/v1/agents` | Register a deployment |
-| GET / PUT | `/v1/agents/{id}` | Inspect / replace registration with `expected_rev` |
-| POST | `/v1/agents/{id}/refresh` | Queue a read-only poll |
-| GET | `/v1/agents/{id}/configuration` | Read a page from a complete cached snapshot |
-| Core method | `/v1/agents/{id}/api/{core-path}` | Forward one live Core API request |
-| POST | `/v1/fleet/read` | Explicit GET fan-out to 1–8 agents |
-| POST | `/v1/fleet/invoke` | Explicit Core API fan-out to 1–8 agents |
-
-Example cached configuration: `GET /v1/agents/account-a-prod/configuration?kind=list`.
-Pass `next_token` from each response to continue. Snapshot cursors remain pinned
-to their generation even when another poll completes.
-
-Example live operation: `GET /v1/agents/account-a-prod/api/rules/runtime-status`.
-The response wraps the agent result as `{status_code, body, agent_id, attempted}`.
-Use the Core API's normal query parameters and JSON body on proxy routes.
-
-For several agents, send `examples/read-fleet.json` to `/v1/fleet/read`. A bulk
-request always returns an explicit per-agent result; HTTP 207 is not proof that
-every target succeeded. The operator client returns a nonzero exit code when
-any target fails. For large payloads, use individual agent proxy calls; a bulk
-response can mark an individual `body_omitted` to remain within response limits,
-while retaining its HTTP status and outcome.
-
-To enable writes, prepare the operator credential, then PUT the complete agent
-registration with `allow_writes: true` and `expected_rev` equal to its current
-revision. Callers also need IAM permission for the write route. Forward the exact
-`expected_rev` read from each agent; different agents can require different values,
-so use their individual proxy routes when necessary. Fleet does not silently
-rebase conflicts, roll back other targets, or retry an ambiguous response action.
+Contributors can still clone this repository, install `requirements.lock` and
+`npm ci`, and use `python scripts/deploy.py` with the same account/profile/region/
+stage guards. These are implementation helpers behind the installed CLI.
+`--package-only` validates packaging without deploying; omit it for deployment.
+Use the installed CLI's `--artifact` workflow when promoting an already reviewed
+package. PyPI's `opencdr-fleet-manager` distribution contains the service Python
+modules; `opencdr-deploy` is the operational console command.
 
 ## Configuration and operational limits
 
@@ -253,7 +164,7 @@ HTTP latency, retries and backlog affect observation age. Polls have a 40-second
 collection budget, 200-page bounds per listing, and a 5,000-resource/20 MB snapshot
 limit (2 MB per upstream HTTP response). Overflow or collection failure keeps the previous complete snapshot and
 reports failure. Poll jobs older than thirty minutes are discarded. The queue is
-limited to 20 concurrent workers; monitor backlog before expanding a large fleet.
+limited to 2 concurrent poll workers by default, configurable with `--poll-concurrency`; monitor backlog before expanding a large fleet.
 
 Only profiles named in `settings_ids` and bindings named in `integration_ids`
 can be enumerated reliably: Core currently has no saved-profile/binding listing

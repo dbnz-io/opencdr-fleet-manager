@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--allowed-agent-hosts", default="")
     parser.add_argument("--snapshot-retention-hours", type=int, default=24)
     parser.add_argument("--pause-polling", action="store_true")
+    parser.add_argument("--poll-concurrency", type=int, default=2)
     parser.add_argument("--package-only", action="store_true")
     args = parser.parse_args()
     if not re.fullmatch(r"\d{12}", args.security_account_id):
@@ -31,6 +32,8 @@ def main():
         parser.error("--stage must be a lowercase name, up to 32 characters")
     if not 2 <= args.snapshot_retention_hours <= 168:
         parser.error("snapshot retention must be 2–168 hours")
+    if not 2 <= args.poll_concurrency <= 1000:
+        parser.error("poll concurrency must be 2–1000")
     session = boto3.Session(profile_name=args.profile, region_name=args.region)
     actual = session.client("sts").get_caller_identity()["Account"]
     if actual != args.security_account_id:
@@ -44,11 +47,19 @@ def main():
         args.region,
         f"--param=securityProfile={args.security_profile}",
         f"--param=snapshotRetentionHours={args.snapshot_retention_hours}",
-        f"--param=allowedAgentHosts={args.allowed_agent_hosts}",
+        f"--param=pollConcurrency={args.poll_concurrency}",
         f"--param=pollingEnabled={str(not args.pause_polling).lower()}",
     ]
+    # Serverless v4 rejects empty --param values; its YAML default is already empty.
+    if args.allowed_agent_hosts:
+        common.append(f"--param=allowedAgentHosts={args.allowed_agent_hosts}")
     executable = str(ROOT / "node_modules/.bin/serverless")
     subprocess.run([executable, "package", *common], cwd=ROOT, env=env, check=True)
+    if args.package_only:
+        print(
+            "Package ready. No AWS stack was created or updated. "
+            "Rerun this command without --package-only to deploy."
+        )
     if not args.package_only:
         # Deploy the exact package just compiled, not a rebuild.
         subprocess.run(

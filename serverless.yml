@@ -9,6 +9,7 @@ params:
     securityProfile: standard
     allowedAgentHosts: ''
     snapshotRetentionHours: '24'
+    pollConcurrency: 2
 
 package:
   artifact: build/fleet-manager.zip
@@ -107,7 +108,6 @@ functions:
   poll:
     handler: opencdr_fleet.handlers.worker
     timeout: 55
-    reservedConcurrency: 20
     iamRoleStatements:
       - *registryWrite
       - *statusRead
@@ -122,7 +122,7 @@ functions:
       - sqs:
           arn: !GetAtt PollQueue.Arn
           batchSize: 1
-          maximumConcurrency: 20
+          maximumConcurrency: ${param:pollConcurrency}
           functionResponseType: ReportBatchItemFailures
 
 resources:

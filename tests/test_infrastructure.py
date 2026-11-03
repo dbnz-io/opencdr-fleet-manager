@@ -62,3 +62,11 @@ def test_openapi_covers_deployed_routes_and_contract_version():
         method = event["http"]["method"]
         if method != "any":
             assert method in spec["paths"][path]
+
+
+def test_polling_uses_a_queue_cap_without_reserving_account_concurrency():
+    template = yaml.load((ROOT / 'serverless.yml').read_text(), Loader=Loader)
+    poll = template['functions']['poll']
+    assert 'reservedConcurrency' not in poll
+    assert template['params']['default']['pollConcurrency'] == 2
+    assert poll['events'][0]['sqs']['maximumConcurrency'] == '${param:pollConcurrency}'
