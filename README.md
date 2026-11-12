@@ -139,10 +139,10 @@ If rollback removes the stack but leaves its retained DynamoDB tables, preserve
 them and review `opencdr-deploy fleet recover` before retrying deployment. The
 local recovery implementation imports retained tables and their paired evidence
 bucket with a saved plan/digest, then keeps both poll schedules paused. See
-Deploy's [storage recovery guide](../opencdr-deploy/docs/fleet-storage-recovery.md)
+Deploy's [storage recovery guide](https://github.com/dbnz-io/opencdr-deploy/blob/main/docs/fleet-storage-recovery.md)
 in the workspace. An existing failed stack requires review; the tool does not
 delete stacks automatically. Replaced worker principals require the separate
-[reviewed handoff](../opencdr-internal/docs/detection-handoffs.md) in this workspace.
+[reviewed handoff](https://github.com/dbnz-io/opencdr/blob/main/docs/detection-handoffs.md) in this workspace.
 PITR/feed replacement and live acceptance remain gates; import completion does
 not imply collection readiness.
 
@@ -272,7 +272,7 @@ separate operator actions.
 Licensed under the [Mozilla Public License 2.0 (MPL-2.0)](https://github.com/dbnz-io/opencdr-fleet-manager/blob/main/LICENSE).
 
 
-Reviewed [feed storage and consumer recovery](../opencdr-internal/docs/detection-feed-recovery.md)
+Reviewed [feed storage and consumer recovery](https://github.com/dbnz-io/opencdr/blob/main/docs/detection-feed-recovery.md)
 is implemented locally through Deploy API commands: inspect physical binding,
 review/apply generation rotation, complete retained-source backfill, then queue
 Fleet replay with polling paused. This does not initiate AWS PITR or claim live
@@ -290,7 +290,7 @@ revision checks and stable request IDs. Cases track SIEM work; they do not run
 investigations or change detection handling. Fleet requires explicit principal
 account grants, even for administrators, and never fans out case reads to Core.
 
-Use the [owner deployment/test and KPI guide](../opencdr-internal/docs/operational-cases.md) for grants, Deploy commands,
+Use the [owner deployment/test and KPI guide](https://github.com/dbnz-io/opencdr/blob/main/docs/operational-cases.md) for grants, Deploy commands,
 limits, failure scenarios and remaining live/retention/migration gates. This
 candidate is locally tested; it has not been deployed or publicly promoted.
 
@@ -317,5 +317,5 @@ Owner review registry/inbox/decisions and owner-local routing previews are now
 implemented locally. Fleet also negotiates complete saved-profile/binding
 inventory with compatible Core agents. These changes are undeployed and are not
 approval-enforced jobs or automatic case routing. See the coordinated
-[implementation and CLI guide](../opencdr-internal/docs/p4-p6-local-implementation-2026-11-11.md)
+[implementation and CLI guide](https://github.com/dbnz-io/opencdr/blob/main/docs/p4-p6-local-implementation-2026-11-11.md)
 for capabilities, limits, evidence and remaining acceptance gates.

@@ -1,6 +1,6 @@
 # Fleet engine acceptance and handoff
 
-The [12 November handoff guide](../../opencdr-deploy/docs/handoff-2026-11-12.md) is the
+The [12 November handoff guide](https://github.com/dbnz-io/opencdr-deploy/blob/main/docs/handoff-2026-11-12.md) is the
 runnable candidate procedure. Use installed Deploy with pinned artifacts and IAM;
 legacy API keys are an explicit migration path, not the default. P0–P7 isolated
 engine evidence is recorded. Independent owner results and public release remain
@@ -49,7 +49,7 @@ Production Fleet and Control Tower remain outside the handoff fixture. After the
 installation temporarily adds14; the installer does not silently recreate the
 retired p1/p7 stages. Record remaining infrastructure until reviewed cleanup completes.
 
-Use [owner workflows](../../opencdr-deploy/docs/owner-workflows.md),
-[recovery](../../opencdr-deploy/docs/fleet-storage-recovery.md),
-[KPI measurements](../../opencdr-deploy/docs/engine-kpis.md), and the
-[owner worksheet](../../opencdr-deploy/docs/engine-acceptance-worksheet.json).
+Use [owner workflows](https://github.com/dbnz-io/opencdr-deploy/blob/main/docs/owner-workflows.md),
+[recovery](https://github.com/dbnz-io/opencdr-deploy/blob/main/docs/fleet-storage-recovery.md),
+[KPI measurements](https://github.com/dbnz-io/opencdr-deploy/blob/main/docs/engine-kpis.md), and the
+[owner worksheet](https://github.com/dbnz-io/opencdr-deploy/blob/main/docs/engine-acceptance-worksheet.json).

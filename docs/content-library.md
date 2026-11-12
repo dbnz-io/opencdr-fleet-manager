@@ -17,7 +17,7 @@ dependencies, with `deployment_state: not_requested`. No validation, approval,
 Git fetch or rollout happens when saving/freezing. Exact request retries are
 idempotent; stale revisions and conflicting pins fail. There is no delete API.
 
-Use the coordinated [Core library manual](../../opencdr-internal/docs/content-library.md)
+Use the coordinated [Core library manual](https://github.com/dbnz-io/opencdr/blob/main/docs/content-library.md)
 for the route matrix, Deploy examples, web/MCP parity, restore limitations,
 manual acceptance and cost/KPI measurements. The repository's OpenAPI documents
 the concrete routes and physical proxy. This candidate has not been deployed or

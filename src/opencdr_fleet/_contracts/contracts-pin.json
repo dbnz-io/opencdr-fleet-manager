@@ -20,7 +20,7 @@
     "rule_management": "541cdeb368727df72070cce014ff0bd3ae756453d2bc84779eff077843c5b2c5",
     "rule_release": "4888edee7c5d49ae4c2334b952e64f4ee019f0f062ba6d11c2ee205634533a51",
     "rule_schema": "d5120b57ecb78ce377475f747a2c101d0395ea0ead1656762cab93737bc4d746",
-    "detection_engine": "684d8ebdd6165ac8b07293ca4d368bb2201da3bf02c270bb558deba033278a98",
+    "detection_engine": "2afccac335e18904a05cca2883316bdbb06e86ce916362ed382c00c78720ae0b",
     "detection_lists": "2eb2f52e6919223e22d8a116fb78e0a64202d3c821cd6ccbeb6f3a4a5afebcbe",
     "correlation_engine": "890b2645fd6a2eda9077e9b523c2c067f62863fd23696a70f27b7dbd02980bf3",
     "ocsf_min_parser": "e5f35c60991d018cc4e693831ea985ba335f7e1a3b6779f76a1a3fe2158c4f9d",

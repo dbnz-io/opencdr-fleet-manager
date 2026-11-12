@@ -127,7 +127,7 @@ def get_field(obj: Any, path: str):
 
 
 def evaluate_condition(
-    event: NormalizedEvent, cond: dict, lists: dict[str, Any] | None = None
+    event: NormalizedEvent | dict[str, Any], cond: dict, lists: dict[str, Any] | None = None
 ) -> bool:
     remaining()
     field = cond.get("field")
@@ -308,7 +308,8 @@ def build_detection_event(
     }
 
     if normalized_event.integration_id:
-        from .ingestion import CONTEXT_FIELDS, identity
+        from .ingestion import CONTEXT_FIELDS
+        from .ingestion import identity as ingestion_identity
 
         detection.update({key: getattr(normalized_event, key) for key in CONTEXT_FIELDS})
         entity = (
@@ -320,7 +321,7 @@ def build_detection_event(
             detection["runtime_entity"] = (
                 normalized_event.integration_id
                 + ":"
-                + identity(normalized_event.host.get("name"), entity)
+                + ingestion_identity(normalized_event.host.get("name"), entity)
             )
         detection.update(
             integration_id=normalized_event.integration_id,

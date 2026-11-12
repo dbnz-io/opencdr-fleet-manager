@@ -79,9 +79,9 @@ Keep the evidence bucket and table together during recovery. The local Deploy
 implementation now supports reviewed reattachment of the original retained set,
 with table UUID/lineage checks and a pinned bucket name. The first runtime update
 must preserve storage and keep both schedules paused. See the workspace
-[recovery guide](../../opencdr-deploy/docs/fleet-storage-recovery.md).
+[recovery guide](https://github.com/dbnz-io/opencdr-deploy/blob/main/docs/fleet-storage-recovery.md).
 Live import acceptance and PITR restoration remain open. Replaced worker
-principals now have an explicit [reviewed handoff](../../opencdr-internal/docs/detection-handoffs.md)
+principals now have an explicit [reviewed handoff](https://github.com/dbnz-io/opencdr/blob/main/docs/detection-handoffs.md)
 within the same Core feed incarnation; this also awaits live acceptance.
 Do not delete a stack to repair a collection error.
 
@@ -175,7 +175,7 @@ complete history. Handoff does not run a normal collection page or clear a gap.
 
 ## Reviewed replay after storage or checkpoint recovery
 
-The [feed recovery manual](../../opencdr-internal/docs/detection-feed-recovery.md)
+The [feed recovery manual](https://github.com/dbnz-io/opencdr/blob/main/docs/detection-feed-recovery.md)
 covers the local storage guard, generation rotation and completed-backfill replay.
 With detection polling paused, administrators GET/POST
 `/v1/agents/{agent_id}/detections/recover`. The request captures the exact previous
