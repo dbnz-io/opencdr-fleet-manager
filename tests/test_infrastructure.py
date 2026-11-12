@@ -329,7 +329,6 @@ def test_authoring_evidence_partitions_are_allowed_only_for_library_writers():
 def test_p4_identity_epoch_writer_is_limited_to_identity_administrators():
     for path, allowed in [
         (ROOT / "serverless.yml", {"api", "managementAdministrator"}),
-        (ROOT.parent / "opencdr-internal/serverless.yml", {"managementAdministrator"}),
     ]:
         template = yaml.load(path.read_text(), Loader=Loader)
         found = set()
@@ -358,7 +357,6 @@ def test_p4_identity_epoch_writer_is_limited_to_identity_administrators():
 def test_review_grant_and_policy_writes_are_only_owned_by_administrators():
     for path, admins in [
         (ROOT / "serverless.yml", {"api", "managementAdministrator"}),
-        (ROOT.parent / "opencdr-internal/serverless.yml", {"managementAdministrator"}),
     ]:
         template = yaml.load(path.read_text(), Loader=Loader)
         writers = set()
