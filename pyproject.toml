@@ -53,3 +53,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+# Vendored Core sources are hash-pinned and kept byte-identical to upstream.
+# Match Core's line-length policy here; all correctness/security lint stays active.
+[tool.ruff.lint.per-file-ignores]
+"src/opencdr_fleet/_contracts/*.py" = ["E501"]
+"src/opencdr_fleet/_evaluator/*.py" = ["E501"]
