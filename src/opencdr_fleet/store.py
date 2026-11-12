@@ -9,6 +9,7 @@ import time
 import uuid
 from collections import Counter
 from decimal import Decimal
+from functools import cached_property, lru_cache
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -26,6 +27,41 @@ from .models import (
 )
 
 CONFIG = Config(connect_timeout=2, read_timeout=4, retries={"max_attempts": 2, "mode": "standard"})
+
+
+class _SDK:
+    """Reusable SDK connections only. Never cache grants or operational records."""
+
+    def __init__(self, session):
+        self.session = session
+
+    @cached_property
+    def ddb(self):
+        return self.session.resource("dynamodb", config=CONFIG)
+
+    @cached_property
+    def client(self):
+        # Keep the low-level client separate from the resource's marshalling hooks.
+        return self.session.client("dynamodb", config=CONFIG)
+
+    @cached_property
+    def ssm(self):
+        return self.session.client("ssm", config=CONFIG)
+
+    @cached_property
+    def sqs(self):
+        return self.session.client("sqs", config=CONFIG)
+
+    @cached_property
+    def s3(self):
+        return self.session.client("s3", config=CONFIG)
+
+
+@lru_cache(maxsize=1)
+def _runtime_sdk(region, profile):
+    # Lambda runs one invocation at a time in an execution environment. Boto3
+    # retains its refreshable credential provider; no credential bytes are copied.
+    return _SDK(boto3.Session(region_name=region, profile_name=profile))
 
 
 def wire(value):
@@ -46,15 +82,31 @@ def conditional(error: ClientError) -> bool:
 
 class Store:
     def __init__(self, session=None):
-        session = session or boto3.Session()
-        self.ddb = session.resource("dynamodb", config=CONFIG)
-        self.client = session.client("dynamodb", config=CONFIG)
+        self._sdk = (
+            _SDK(session)
+            if session is not None
+            else _runtime_sdk(
+                os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION"), os.getenv("AWS_PROFILE")
+            )
+        )
+        self.ddb = self._sdk.ddb
+        self.client = self._sdk.client
         self.registry = self.ddb.Table(os.environ["REGISTRY_TABLE"])
         self.status = self.ddb.Table(os.environ["STATUS_TABLE"])
         self.cache = self.ddb.Table(os.environ["CACHE_TABLE"])
-        self.ssm = session.client("ssm", config=CONFIG)
-        self.sqs = session.client("sqs", config=CONFIG)
         self.prefix = os.environ["CREDENTIAL_PREFIX"].rstrip("/")
+
+    @cached_property
+    def ssm(self):
+        return self._sdk.ssm
+
+    @cached_property
+    def sqs(self):
+        return self._sdk.sqs
+
+    @cached_property
+    def s3(self):
+        return self._sdk.s3
 
     def get_agent(self, name: str) -> dict:
         item = self.registry.get_item(Key={"id": "AGENT#" + name}, ConsistentRead=True).get("Item")
@@ -135,6 +187,10 @@ class Store:
         return item
 
     def credentials(self, registration: dict, *, write=False) -> tuple[str, str | None]:
+        if write and not registration["allow_writes"]:
+            raise FleetError("agent_writes_disabled", 403)
+        if registration.get("auth_mode", "legacy-api-key") == "iam":
+            return "", "iam" if write else None
         base = f"{self.prefix}/{registration['agent_id']}"
 
         def read(kind):
@@ -163,10 +219,10 @@ class Store:
             ),
         )
 
-    def enqueue_many(self, items: list[dict], sequence: int):
+    def enqueue_many(self, items: list[dict], sequence: int, *, queue_url=None):
         for offset in range(0, len(items), 10):
             result = self.sqs.send_message_batch(
-                QueueUrl=os.environ["POLL_QUEUE_URL"],
+                QueueUrl=queue_url or os.environ["POLL_QUEUE_URL"],
                 Entries=[
                     {
                         "Id": str(index),
@@ -241,13 +297,24 @@ class Store:
         return self.status.get_item(Key={"agent_id": name}, ConsistentRead=True).get("Item", {})
 
     def view_status(self, item: dict) -> dict:
+        from .detections import Detections, installed
+
         state = self.get_status(item["agent_id"])
         now = int(time.time() * 1000)
-        threshold = int(os.environ.get("STALE_AFTER_SECONDS", "180")) * 1000
+        from .polling_policy import stale_after_seconds
+
+        threshold = stale_after_seconds() * 1000
         same_revision = state.get("registration_rev") == item["rev"]
         return {
             "agent": public_registration(item),
             "observation": state or None,
+            "detections": Detections(self).status(item)
+            if installed()
+            else {
+                "state": "not_installed",
+                "enabled": False,
+                "stale": True,
+            },
             "status_stale": not same_revision
             or not item["enabled"]
             or state.get("health") in {"unreachable", "identity_mismatch", "incompatible"}

@@ -90,9 +90,12 @@ def registration(value: Any, name: str | None = None) -> dict:
         "api_url",
         "enabled",
         "allow_writes",
+        "allow_triage",
         "settings_ids",
         "integration_ids",
         "expected_rev",
+        "auth_mode",
+        "write_access",
     }
     if set(value) - allowed:
         raise FleetError("unknown_registration_fields")
@@ -109,10 +112,21 @@ def registration(value: Any, name: str | None = None) -> dict:
     if not isinstance(result.get("stage"), str) or not RESOURCE_ID.fullmatch(result["stage"]):
         raise FleetError("invalid_stage")
     result["api_url"] = endpoint(result.get("api_url"), result["region"])
+    result.setdefault("auth_mode", "iam")
+    if result["auth_mode"] not in {"iam", "legacy-api-key"}:
+        raise FleetError("invalid_auth_mode")
+    result.setdefault("write_access", "operator")
+    if result["write_access"] not in {"operator", "responder", "administrator"}:
+        raise FleetError("invalid_write_access")
+    if (
+        result["auth_mode"] == "iam"
+        and urlsplit(result["api_url"]).path.rstrip("/") != "/" + result["stage"]
+    ):
+        raise FleetError("iam_requires_regional_stage_url")
     result.setdefault("name", result["agent_id"])
     if not isinstance(result["name"], str) or not 1 <= len(result["name"]) <= 100:
         raise FleetError("invalid_name")
-    for flag, default in (("enabled", True), ("allow_writes", False)):
+    for flag, default in (("enabled", True), ("allow_writes", False), ("allow_triage", False)):
         result.setdefault(flag, default)
         if not isinstance(result[flag], bool):
             raise FleetError("invalid_registration_boolean")
@@ -138,7 +152,19 @@ def public_registration(item: dict) -> dict:
     return {
         key: value
         for key, value in item.items()
-        if key not in {"id", "record_type", "poll_token", "lease_until", "completed_sequence"}
+        if key
+        not in {
+            "id",
+            "record_type",
+            "poll_token",
+            "lease_until",
+            "completed_sequence",
+            "detection_handoff",
+            "detection_reconciliation",
+            "detection_token",
+            "detection_lease_until",
+            "detection_completed_sequence",
+        }
     }
 
 

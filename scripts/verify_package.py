@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify repeated artifact hashes, allowlisted contents and isolated runtime imports."""
 
+import argparse
 import hashlib
 import subprocess
 import sys
@@ -12,10 +13,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--vendor", type=Path)
+    args = parser.parse_args()
     artifact = ROOT / "build/fleet-manager.zip"
     digests = []
     for _ in range(2):
-        subprocess.run([sys.executable, str(ROOT / "scripts/package.py")], check=True)
+        subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/package.py"),
+                *(["--vendor", str(args.vendor)] if args.vendor else []),
+            ],
+            check=True,
+        )
         digests.append(hashlib.sha256(artifact.read_bytes()).hexdigest())
     if digests[0] != digests[1]:
         raise RuntimeError("Repeated builds produced different artifacts")
@@ -28,6 +39,7 @@ def main():
         "s3transfer",
         "six.py",
         "urllib3",
+        "regex",
     }
     with zipfile.ZipFile(artifact) as archive:
         for name in archive.namelist():

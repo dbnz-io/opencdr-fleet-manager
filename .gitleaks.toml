@@ -1,0 +1,17 @@
+# Retain every default rule. These reviewed findings are exact checksum entries.
+# New/changed entries are scanned normally; do not add credentials here.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Verified SHA-256 inventory entries, not credentials"
+condition = "AND"
+regexTarget = "line"
+targetRules = ["generic-api-key"]
+paths = [ '''(?:^|/)src/opencdr_fleet/_contracts/contracts\-pin\.json$''' ]
+regexes = [
+  '''^\s*"approval_api_sha256": "62eba5d13aabd3428b39d268f9a522fae86273a9490a767d0ddfa8cfde67e937",?\s*$''',
+  '''^\s*"case_api_sha256": "a0c77ec07d3cef02cb49d50fb54216439dd9422d54a7eba3cba41b61123fe626",?\s*$''',
+  '''^\s*"library_api_sha256": "d081170f3a6a2b9d634cdfe5aa2def1ce82a247d33bbf24525fb94e791988a62",?\s*$''',
+  '''^\s*"routing_api_sha256": "ce89f2cc241076197517bd28bb261626170549ffd8d074c61c701e4eb59ce2c5",?\s*$''',
+]

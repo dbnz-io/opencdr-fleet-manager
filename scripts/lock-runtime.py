@@ -13,6 +13,7 @@ VERSIONS = {
     "python-dateutil": "2.9.0.post0",
     "six": "1.17.0",
     "urllib3": "2.8.0",
+    "regex": "2026.9.29",
 }
 
 

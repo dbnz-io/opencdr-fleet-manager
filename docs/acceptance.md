@@ -1,42 +1,55 @@
-# Live acceptance before production registration
+# Fleet engine acceptance and handoff
 
-Local tests use Moto and mocked HTTPS. Complete this against a staging fleet
-with at least two explicitly selected Core deployments before promoting it.
-Use the README commands and invoke-only caller policies; record stack/release
-identities and results. No command here is executed automatically by CI.
+The [12 November handoff guide](../../opencdr-deploy/docs/handoff-2026-11-12.md) is the
+runnable candidate procedure. Use installed Deploy with pinned artifacts and IAM;
+legacy API keys are an explicit migration path, not the default. P0–P7 isolated
+engine evidence is recorded. Independent owner results and public release remain
+separate. Web/mobile/hosted application checks are P10.
 
-1. Deploy in the expected security account. Verify the three tables, encrypted
-   queues, one-minute schedule, per-function roles and IAM on every API method.
-   An unsigned request must receive 403. A caller without write-route permission
-   must also receive 403 for proxy writes and bulk invoke.
-2. Onboard two agents with different account IDs and read-only keys. Confirm every
-   minute produces fresh status and complete snapshots with the correct account,
-   region and stage, actual feature flags, runtime generation and API quota data.
-   Missing reported fields must stay unknown. Check actual Core usage-plan limits.
-3. Add a multi-page rule catalog and reusable lists. Read every cache page, verify
-   list membership and resource counts, and continue a pinned cursor across a new
-   poll. Include a list exceeding 400 KB to verify chunk reconstruction. Inspect
-   notification cache documents: no webhook credentials, tokens or header values.
-4. Block one agent temporarily. Confirm the other continues to update and that
-   the failed target retains its previous snapshot with a failure/stale indication.
-   Restore access and confirm freshness recovers without replaying any writes.
-5. Point a test registration at the other agent's valid URL. A live proxy write
-   must be refused for identity mismatch. Change the registration while a poll is
-   running and verify the old worker cannot publish its result.
-6. Enable a staging operator key and write flag. Proxy a benign revision-guarded
-   change, then send an intentionally stale revision. Confirm the exact conflict
-   and per-agent outcome are returned without silent rebasing or rollback of
-   successful targets. Verify one accepted change gets a fresh cached observation.
-7. Simulate a timeout after an agent accepts a write. Verify Fleet returns an
-   unknown outcome and does not automatically retry it. Inspect Core before any
-   operator retry. Do not use a destructive response action for this exercise.
-8. Pause polling, re-enable it, disable a registration, and rotate a read key.
-   Confirm disabled registrations receive no new scheduled reads or forwarded
-   calls. Allow for an already-running HTTP request to complete.
-9. Verify queue lag and DLQ alarms in CloudWatch, log redaction, TTL expiration,
-   retained-table cleanup procedures and recovery ownership. For hardened, perform
-   an isolated PITR restore drill before depending on it for recovery.
+The owner deferred the100000-record/10-reader stress workload. Use sequential
+foreground checks; no quota request is needed for this handoff. Keep other limits,
+prior failed evidence and actual new failures visible.
 
-Monitor both Lambda/queue failures and agent status records: an unreachable agent
-is a reported observation, not necessarily a failed Lambda invocation. The
-configuration cache is not a cross-resource transaction or an agent backup.
+1. Verify account/region/stage and release/runtime hashes. Review the fresh Add-only
+   plan, IAM-only endpoints, retained data, encrypted queues/DLQs and schedules.
+   The pinned Fleet template has7tables (Library, Case, Detection, Rollout, Registry,
+   Status, Configuration) and14functions split by permission/worker role. Inspect
+   actual template resources; do not rely on the former three-table checklist.
+2. Install Fleet paused first, then Core with this Fleet's exact role principals.
+   Activate Core after the guarded drain/backfill. Register the exact Core identity
+   with IAM and writes/triage disabled. Registration does not transfer case/Library
+   ownership or grant case access.
+3. Verify status and bounded configuration snapshots; preserve missing/stale states.
+   A single real member proves one-member integration, not100deployed accounts.
+   A second separately scoped member is needed for cross-account isolation tests;
+   record NOT_RUN if absent rather than inventing a second deployed account.
+4. Test unsigned/forbidden requests and scoped case grants, stale revisions and
+   unknown outcomes. A distinct restricted IAM profile is needed to prove IAM
+   least privilege; selecting an observer endpoint with admin credentials is narrower
+   API evidence only. Save requests and inspect explicit denial codes.
+5. Verify Fleet case/Library storage independently of Core member availability.
+   Follow the kit's inert create/note/version/replay/cleanup steps. Restore original
+   principal scopes with revision checks; preserve immutable history/evidence.
+6. Keep health/configuration and detection polling distinct. Enable detection only
+   through a reviewed release after Core activation/consumer reconciliation. Compare
+   source commit, persisted IDs, pending receipt, generation, ACK and lag. Do not
+   manually wake queues or reset consumers to manufacture schedule/catch-up results.
+7. Use reviewed inert jobs for configuration/distribution. Freeze actual membership,
+   bound preparation and verify stored/evaluator states separately. Changed
+   registration, revocation, cancellation and unknown effects must stay explicit.
+8. Measure relevant CloudWatch/queue/API evidence with exact UTC windows. Test
+   retention/recovery against isolated data through Deploy. Keep physical storage,
+   claims and evidence intact; the cache is not an account backup.
+9. Disable only fixture registrations/policies, restore grants, close cases and
+   archive drafts. Retire temporary compute only with a reviewed Deploy update
+   that preserves retained data/logs and protected recovery mappings.
+
+Production Fleet and Control Tower remain outside the handoff fixture. After the
+11 November cleanup,15functions remained in the Fleet account. A new Fleet handoff
+installation temporarily adds14; the installer does not silently recreate the
+retired p1/p7 stages. Record remaining infrastructure until reviewed cleanup completes.
+
+Use [owner workflows](../../opencdr-deploy/docs/owner-workflows.md),
+[recovery](../../opencdr-deploy/docs/fleet-storage-recovery.md),
+[KPI measurements](../../opencdr-deploy/docs/engine-kpis.md), and the
+[owner worksheet](../../opencdr-deploy/docs/engine-acceptance-worksheet.json).

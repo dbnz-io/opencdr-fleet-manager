@@ -5,6 +5,28 @@ and IAM caller policies define its organizational boundary. This is not a shared
 multi-tenant SaaS database. Never share a manager's global inventory/bulk IAM
 permissions with an unrelated tenant.
 
+## Function boundaries and verification stacks
+
+The current engine template defines14 Lambda functions per Fleet installation:
+
+| Functions | Count | Purpose |
+| --- | --- | --- |
+| General API and observer/triage/operator/responder/administrator/integration handlers |7| Separate IAM execution roles for each permission boundary |
+| Health/configuration scheduler and poll worker |2| Bounded scheduling, queued retries and configuration snapshots |
+| Detection scheduler and poll worker |2| Independent detection cadence and durable receipt collection |
+| Operator/responder/administrator rollout workers |3| Queued distribution under the matching privilege boundary |
+
+All handlers come from the pinned engine runtime. A function named
+`opencdr-fleet-manager-<stage>-managementOperator` is the operator API handler for
+that stage, not a web application or a separate Fleet instance. A verification stage
+is an independent test installation; it does not serve the production stage.
+
+Several stages in one AWS account share its regional Lambda concurrency quota.
+Count deployed functions separately from simultaneous executions, and include existing
+workers when sizing a concurrent acceptance run. Retained verification stacks must be
+inventoried and cleaned up through reviewed recovery/deletion procedures; never remove
+leases, ownership markers or retained stores merely to reduce the function count.
+
 ## Storage ownership
 
 | Table | Key | Contents |
@@ -13,7 +35,8 @@ permissions with an unrelated tenant.
 | Status | `agent_id` | Current poll outcome plus last verified Core report, runtime state, cache generation and timestamps |
 | Configuration | `pk = agent_id#generation`, `sk` | Complete manifest, per-resource metadata and chunked JSON documents with TTL |
 
-Credentials are separate SSM SecureStrings beneath
+IAM/SigV4 with short-lived credentials is the default. Only explicit legacy API-key
+connections use separate SSM SecureStrings beneath
 `/opencdr-fleet-manager/<stage>/agents/<agent_id>/{read,write}-key`. The API never
 accepts their plaintext values in registration documents. Poll workers only have
 GetParameter permission for `read-key`, and no mutation route is called by polling.

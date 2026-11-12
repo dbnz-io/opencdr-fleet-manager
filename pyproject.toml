@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "opencdr-fleet-manager"
-version = "0.1.1"
+version = "0.2.0"
 description = "Optional Serverless fleet manager for organization-local OpenCDR agents"
 authors = [{name = "DBNZ"}]
 keywords = ["opencdr", "aws", "serverless", "security", "fleet-management"]
@@ -21,7 +21,7 @@ requires-python = ">=3.12"
 readme = "README.md"
 license = "MPL-2.0"
 license-files = ["LICENSE"]
-dependencies = ["boto3==1.43.119"]
+dependencies = ["boto3==1.43.119", "regex==2026.9.29"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "moto[dynamodb,ssm,sqs,apigateway]>=5,<6", "ruff>=0.12,<1", "PyYAML>=6,<7", "build>=1.2,<2", "twine>=6,<7"]
