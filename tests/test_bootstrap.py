@@ -76,3 +76,36 @@ def test_scoped_key_onboarding_uses_real_sdk_pagination_and_reuses_the_key(store
     second = bootstrap.scoped_key(gateway, plan["id"], name)
     assert first == second
     assert len(gateway.get_api_keys()["items"]) == 1
+
+
+def test_iam_bootstrap_includes_detection_reader_and_refuses_older_fleet():
+    names = [
+        "PollRoleArn",
+        "DetectionPollRoleArn",
+        "ManagementObserverRoleArn",
+        "ManagementOperatorRoleArn",
+        "ManagementResponderRoleArn",
+        "ManagementAdministratorRoleArn",
+        "RolloutOperatorRoleArn",
+        "RolloutResponderRoleArn",
+        "RolloutAdministratorRoleArn",
+    ]
+    outputs = [
+        {"OutputKey": name, "OutputValue": f"arn:aws:iam::222222222222:role/{name}"}
+        for name in names
+    ]
+    security, core, cfn = Mock(), Mock(), Mock()
+    security.client.side_effect = lambda service: {
+        "sts": Mock(get_caller_identity=lambda: {"Account": "222222222222"}),
+        "cloudformation": cfn,
+    }[service]
+    core.client.return_value.get_caller_identity.return_value = {"Account": "111111111111"}
+    cfn.describe_stacks.return_value = {"Stacks": [{"Outputs": outputs}]}
+    agent = {"auth_mode": "iam", "account_id": "111111111111"}
+    value = bootstrap.bootstrap(security, core, agent, "prod", "222222222222")
+    assert "role/DetectionPollRoleArn" in value["core_parameters"]["managementPrincipalArns"]
+    cfn.describe_stacks.return_value = {
+        "Stacks": [{"Outputs": [o for o in outputs if o["OutputKey"] != "DetectionPollRoleArn"]}]
+    }
+    with pytest.raises(RuntimeError, match="Upgrade Fleet Manager"):
+        bootstrap.bootstrap(security, core, agent, "prod", "222222222222")

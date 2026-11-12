@@ -1,0 +1,380 @@
+from __future__ import annotations
+
+import json
+import logging
+import os
+import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
+
+import regex
+
+from .detection_lists import list_matches, referenced_list_versions
+from .evaluation_budget import remaining
+from .ocsf_min_parser import NormalizedEvent
+from .response_actions import resolve_response_actions
+
+# Pure domain logic deliberately has no dependency on src/infra/ (no Logger
+# instance threaded through get_field/evaluate_condition/rule_matches/
+# run_detection). Stdlib logging reaches CloudWatch automatically under
+# Lambda's default logging config without that coupling.
+_log = logging.getLogger(__name__)
+
+# ReDoS protection for rule-supplied `matches`/`not_matches` patterns.
+#
+# The processor evaluates every event against every enabled rule, so a single
+# catastrophic-backtracking pattern (e.g. authored by an attacker who wants a
+# customer blind) can stall detection account-wide. The `regex` module has a
+# more backtracking-resistant engine than stdlib `re` AND accepts a per-call
+# `timeout=`, which raises TimeoutError rather than hanging -- the hard bound.
+# A subject-length cap is cheap defense-in-depth. On timeout / oversized input
+# / invalid pattern the match is treated as "could not evaluate" -> the
+# condition is not satisfied (no spurious detection), mirroring the prior
+# re.error behaviour. Tunable per deployment without a code change.
+_REGEX_TIMEOUT_SECONDS = float(os.getenv("REGEX_EVAL_TIMEOUT_SECONDS", "1.0"))
+_REGEX_MAX_SUBJECT_LEN = int(os.getenv("REGEX_MAX_SUBJECT_LEN", "100000"))
+
+
+def _bounded_regex_search(pattern: str, subject: str, field, op) -> bool | None:
+    """Return True/False for a match, or None if the pattern could not be
+    safely evaluated (oversized subject, timeout, or invalid pattern).
+
+    Never raises and never hangs -- the timeout bounds wall-time regardless of
+    how pathological the pattern is.
+    """
+    if len(subject) > _REGEX_MAX_SUBJECT_LEN:
+        _log.warning(
+            "detection_engine: subject too long (%d > %d) for op=%s field=%r -- skipping regex",
+            len(subject),
+            _REGEX_MAX_SUBJECT_LEN,
+            op,
+            field,
+        )
+        return None
+    try:
+        return regex.search(pattern, subject, timeout=remaining(_REGEX_TIMEOUT_SECONDS)) is not None
+    except TimeoutError:
+        if remaining() is not None:
+            raise
+        _log.warning(
+            "detection_engine: regex timed out after %ss for op=%s field=%r value=%r -- "
+            "treating as no-match (possible ReDoS pattern)",
+            _REGEX_TIMEOUT_SECONDS,
+            op,
+            field,
+            pattern,
+        )
+        return None
+    except (regex.error, TypeError) as exc:
+        _log.warning(
+            "detection_engine: regex failed for op=%s field=%r value=%r: %s",
+            op,
+            field,
+            pattern,
+            exc,
+        )
+        return None
+
+
+# ----------------------------
+# Field Resolver
+# ----------------------------
+
+
+def get_field(obj: Any, path: str):
+    """
+    Supports:
+      actor.user_name
+      network.source_ip
+      api.operation
+
+    Security: dotted paths are resolved by dict lookup where the current value
+    is a dict, and by getattr otherwise. A real event field never starts with
+    an underscore, so a path segment like "__class__"/"__globals__" is not a
+    field lookup -- it is an attempt to walk out of the event object into
+    Python internals (turning "can author a rule" into a memory-read
+    primitive). Underscore-prefixed segments are refused on the getattr path
+    and the field resolves to None. Dict-key access is left untouched (it
+    cannot reach code objects), so arbitrary `raw_event.*` keys still work.
+    """
+
+    cur = obj
+
+    for part in path.split("."):
+        if isinstance(cur, dict):
+            cur = cur.get(part)
+        else:
+            if part.startswith("_"):
+                _log.warning(
+                    "detection_engine: refusing disallowed field segment %r in path %r "
+                    "(underscore-prefixed attribute access is not permitted)",
+                    part,
+                    path,
+                )
+                return None
+            cur = getattr(cur, part, None)
+
+        if cur is None:
+            return None
+
+    return cur
+
+
+# ----------------------------
+# Condition Engine
+# ----------------------------
+
+
+def evaluate_condition(
+    event: NormalizedEvent | dict[str, Any], cond: dict, lists: dict[str, Any] | None = None
+) -> bool:
+    remaining()
+    field = cond.get("field")
+    op = cond.get("op", "exists")
+    value = cond.get("value")
+
+    if op == "wildcard":
+        return True
+
+    observed = get_field(event, field)
+
+    if op == "exists":
+        return observed is not None
+
+    if op == "not_exists":
+        return observed is None
+
+    if observed is None:
+        return False
+
+    observed = str(observed)
+
+    if op == "equals":
+        return observed == str(value)
+
+    if op == "not_equals":
+        return observed != str(value)
+
+    def _as_list(v: Any) -> list[Any]:
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        return [v]
+
+    if op == "in":
+        return observed in [str(x) for x in _as_list(value)]
+    if op == "not_in":
+        return observed not in [str(x) for x in _as_list(value)]
+
+    if op == "in_list":
+        list_id = cond.get("list_id", "")
+        snapshot = (lists or {}).get(list_id)
+        return snapshot is not None and list_matches(observed, snapshot)
+
+    if op == "not_in_list":
+        list_id = cond.get("list_id", "")
+        snapshot = (lists or {}).get(list_id)
+        return snapshot is not None and not list_matches(observed, snapshot)
+
+    if op == "contains":
+        return str(value) in observed
+
+    if op == "not_contains":
+        return str(value) not in observed
+
+    if op == "prefix":
+        return observed.startswith(str(value))
+
+    if op == "not_prefix":
+        return not observed.startswith(str(value))
+
+    if op == "suffix":
+        return observed.endswith(str(value))
+
+    if op == "not_suffix":
+        return not observed.endswith(str(value))
+
+    if op == "matches":
+        # None (could-not-evaluate) -> condition not satisfied.
+        return _bounded_regex_search(value, observed, field, op) is True
+
+    if op == "not_matches":
+        # None (could-not-evaluate) -> condition not satisfied (no spurious fire).
+        return _bounded_regex_search(value, observed, field, op) is False
+
+    _log.warning(
+        "detection_engine: unknown condition operator op=%r field=%r -- treating as no-match",
+        op,
+        field,
+    )
+    return False
+
+
+def rule_matches(event: NormalizedEvent, rule: dict, lists: dict[str, Any] | None = None) -> bool:
+    conditions = rule.get("conditions", [])
+
+    if not conditions:
+        return False
+
+    for cond in conditions:
+        if not evaluate_condition(event, cond, lists=lists):
+            return False
+
+    return True
+
+
+# ----------------------------
+# Detection Builder
+# ----------------------------
+
+
+def build_detection_event(
+    normalized_event: NormalizedEvent,
+    rule: dict,
+    *,
+    list_versions: list | dict | None = None,
+) -> dict:
+
+    now = datetime.now(UTC).isoformat()
+    from .rule_release import canonical
+
+    def number(value):
+        if isinstance(value, Decimal):
+            return int(value) if value == value.to_integral_value() else float(value)
+        raise TypeError(f"Unsupported detection identity value: {type(value).__name__}")
+
+    # EventBridge can retry an event after any downstream enqueue/commit. The
+    # logical match identity must survive that retry and still distinguish two
+    # rules (or versions/dependencies) matching the same source event. GuardDuty
+    # finding updates share a finding ID, so source time is part of the identity.
+    identity = json.dumps(
+        {
+            "contract": "opencdr.detection-id/1",
+            "event": [
+                normalized_event.source,
+                normalized_event.cloud_account_id,
+                normalized_event.cloud_region,
+                normalized_event.event_id,
+                normalized_event.time,
+                normalized_event.integration_id,
+            ],
+            "rule": canonical(rule),
+            "rule_revision": rule.get("rev"),
+            "list_versions": list_versions or {},
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        default=number,
+    )
+
+    severity = rule.get("severity", "LOW")
+
+    detection = {
+        # Required for DynamoDB signal table
+        "detection_id": str(uuid.uuid5(uuid.NAMESPACE_URL, identity)),
+        "identity_version": "opencdr.detection-id/1",
+        "timestamp": now,
+        "event_time": normalized_event.time,
+        "severity": severity,
+        "rule_id": rule.get("rule_id"),
+        "rule_revision": rule.get("rev"),
+        "rule_version": rule.get("rule_version") or rule.get("version"),
+        "content_fingerprint": rule.get("content_fingerprint"),
+        "release_id": rule.get("release_id"),
+        "release_version": rule.get("release_version"),
+        "evaluation_mode": rule.get("evaluation_mode", "production"),
+        "response_mode": rule.get("response_mode", "armed"),
+        "contract_version": rule.get("contract_version"),
+        "notify": rule.get("notify", True),
+        "response_module": rule.get("response_module"),
+        "response_actions": rule.get("response_actions", []),
+        "playbook": rule.get("playbook"),
+        # normalized event context
+        "event_id": normalized_event.event_id,
+        "activity_name": normalized_event.activity_name,
+        "category": normalized_event.category,
+        "class_name": normalized_event.class_name,
+        "source": normalized_event.source,
+        "actor": normalized_event.actor.__dict__,
+        "network": normalized_event.network.__dict__,
+        "api": normalized_event.api.__dict__,
+        "resources": [r.__dict__ for r in normalized_event.resources],
+        "cloud_account_id": normalized_event.cloud_account_id,
+        "cloud_region": normalized_event.cloud_region,
+        "gd_resource_type": normalized_event.gd_resource_type,
+        "raw_event": normalized_event.raw_event,
+    }
+
+    if normalized_event.integration_id:
+        from .ingestion import CONTEXT_FIELDS
+        from .ingestion import identity as ingestion_identity
+
+        detection.update({key: getattr(normalized_event, key) for key in CONTEXT_FIELDS})
+        entity = (
+            normalized_event.container.get("id")
+            or normalized_event.host.get("id")
+            or normalized_event.host.get("name")
+        )
+        if entity:
+            detection["runtime_entity"] = (
+                normalized_event.integration_id
+                + ":"
+                + ingestion_identity(normalized_event.host.get("name"), entity)
+            )
+        detection.update(
+            integration_id=normalized_event.integration_id,
+            provenance=normalized_event.provenance,
+            event_time=normalized_event.time,
+            cloud_provider=normalized_event.cloud_provider,
+            response_module=None,
+            response_actions=[],
+            playbook=None,
+        )
+
+    # Denormalized mirror of actor.user_name for gsi_signal_actor_user_name
+    # (serverless.yml) -- GSI keys must be top-level scalars, not nested
+    # inside a map. Only set when present so the GSI stays sparse: a signal
+    # with no actor.user_name simply doesn't appear in it, same as it
+    # couldn't be grouped by that field for correlation anyway.
+    if normalized_event.actor.user_name:
+        detection["actor_user_name"] = normalized_event.actor.user_name
+
+    if detection.get("response_actions"):
+        detection["resolved_response_actions"] = resolve_response_actions(
+            detection, detection["response_actions"]
+        )
+
+    from .execution_policy import apply_execution_policy
+
+    return apply_execution_policy(detection)
+
+
+# ----------------------------
+# Detection Pipeline
+# ----------------------------
+
+
+def run_detection(
+    normalized_event: NormalizedEvent,
+    rules: list[dict],
+    lists: dict[str, Any] | None = None,
+) -> list[dict]:
+
+    detections: list[dict] = []
+
+    for rule in rules:
+        if not rule.get("enabled", True):
+            continue
+
+        if not rule_matches(normalized_event, rule, lists=lists):
+            continue
+
+        list_versions = referenced_list_versions(rule, lists or {})
+        detection = build_detection_event(normalized_event, rule, list_versions=list_versions)
+        if list_versions:
+            detection["list_versions"] = list_versions
+        detections.append(detection)
+
+    return detections

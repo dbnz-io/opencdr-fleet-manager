@@ -46,6 +46,61 @@ def test_unknown_registration_fields_and_plaintext_keys_are_rejected():
         registration({"api_key": "do-not-persist-me"})
 
 
+def test_detection_feed_is_read_only_in_forwarding_contract():
+    route("GET", "/detections/feed")
+    for method in ("POST", "PUT", "DELETE"):
+        with pytest.raises(FleetError):
+            route(method, "/detections/feed")
+
+
+def test_delivery_transport_is_iam_only_and_cannot_write_configuration(store, agent_record):
+    agent = Agent({**agent_record, "auth_mode": "iam"}, "")
+    response = BytesIO(b'{"rev":1}')
+    response.code = 200
+    agent.opener.open = Mock(return_value=response)
+    assert agent.delivery_request("POST", "/detections/consumers/test", body={})[0] == 200
+    request = agent.opener.open.call_args.args[0]
+    assert request.full_url.endswith("/management/delivery/detections/consumers/test")
+    assert request.get_header("Authorization").startswith("AWS4-HMAC-SHA256")
+    for path in (
+        "/settings/global",
+        "/detections/consumers/../rules",
+        "/detections/consumers/test?owner=other",
+    ):
+        with pytest.raises(FleetError, match="unsupported_delivery_route"):
+            agent.delivery_request("POST", path, body={})
+    with pytest.raises(FleetError):
+        Agent(agent_record, "key").delivery_request("POST", "/detections/consumers/test", body={})
+    with pytest.raises(FleetError):
+        route("POST", "/detections/consumers/test")
+    with pytest.raises(FleetError):
+        route("POST", "/detections/consumers/recovery-test/recover")
+    response = BytesIO(b'{"rev":1}')
+    response.code = 200
+    agent.opener.open = Mock(return_value=response)
+    assert (
+        agent.delivery_request("POST", "/detections/consumers/recovery-test/recover", body={})[0]
+        == 200
+    )
+    assert "/management/delivery/" in agent.opener.open.call_args.args[0].full_url
+
+
+def test_iam_uses_temporary_credentials_and_the_observer_path(store, agent_record):
+    record = {**agent_record, "auth_mode": "iam"}
+    assert store.credentials(record) == ("", None)
+    agent = Agent(record, "")
+    response = BytesIO(b'{"ok":true}')
+    response.code = 200
+    agent.opener.open = Mock(return_value=response)
+    assert agent.request("GET", "/status")[0] == 200
+    request = agent.opener.open.call_args.args[0]
+    assert request.full_url.endswith("/management/observer/status")
+    assert request.get_header("Authorization").startswith("AWS4-HMAC-SHA256")
+    assert not request.has_header("X-api-key")
+    with pytest.raises(FleetError, match="writes_disabled"):
+        agent.request("PUT", "/settings/global", body={"expected_rev": 0})
+
+
 def test_identity_mismatch_blocks_the_operation(agent_record, report):
     agent = Agent(agent_record, "read", "write")
     agent.get = Mock(
@@ -78,3 +133,64 @@ def test_pagination_handles_empty_filtered_pages_and_rejects_cursor_loops(agent_
     agent.get = Mock(return_value={"items": [], "next_token": "loop"})
     with pytest.raises(FleetError, match="repeated_agent_cursor"):
         list(agent.pages("/rules"))
+
+
+@pytest.mark.parametrize(
+    "method,access,path",
+    [
+        ("GET", "observer", "/detections/handling"),
+        ("PUT", "triage", "/detections/handling"),
+        ("GET", "observer", "/detections/outcomes"),
+        ("GET", "observer", "/detections/outcomes/history"),
+    ],
+)
+def test_handling_relay_preserves_human_and_original_expiry_with_core_audience(
+    store, agent_record, method, access, path
+):
+    import json
+
+    from opencdr_fleet._contracts.delegation import CURRENT
+
+    authority = Mock()
+    authority.claim = {
+        "issuer": "opencdr-saas",
+        "tenant": "org-a",
+        "subject": "user-a",
+        "audience": {"account_id": "999999999999", "home_region": "us-east-1", "stage": "prod"},
+        "issued_at": 1000,
+        "expires_at": 1030,
+    }
+    token = CURRENT.set(authority)
+    agent = Agent({**agent_record, "auth_mode": "iam", "allow_triage": True}, "")
+    response = BytesIO(b'{"code":"identity_denied"}')
+    response.code = 403
+    agent.opener.open = Mock(return_value=response)
+    body = {"expected_rev": 1, "request_id": "a" * 32} if method == "PUT" else None
+    try:
+        if "outcomes" in path:
+            result = agent.outcomes_request(path, query={"detection_id": "d"})
+        else:
+            result = agent.handling_request(method, path, body=body, query={"detection_id": "d"})
+        assert result[0] == 403
+    finally:
+        CURRENT.reset(token)
+    request = agent.opener.open.call_args.args[0]
+    assert request.get_method() == "POST"
+    assert request.full_url.endswith("/management/" + access + "/delegated")
+    assertion = json.loads(request.data)
+    assert assertion["identity"] == {
+        **authority.claim,
+        "audience": {
+            "account_id": agent_record["account_id"],
+            "home_region": agent_record["region"],
+            "stage": agent_record["stage"],
+        },
+    }
+    assert assertion["operation"] == {
+        "method": method,
+        "path": path,
+        "query": {"detection_id": "d"},
+        "body": body or {},
+    }
+    authority.fresh.assert_called_once()
+    agent.opener.open.assert_called_once()

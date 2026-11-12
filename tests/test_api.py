@@ -31,6 +31,19 @@ def test_fleet_read_endpoint_cannot_be_used_to_write(store):
         )
 
 
+@pytest.mark.parametrize("access", ["observer", "operator", "responder"])
+def test_detection_reconciliation_requires_administrator(store, monkeypatch, access):
+    monkeypatch.setenv("FLEET_MANAGEMENT_ACCESS", access)
+    with pytest.raises(FleetError, match="requires_administrator"):
+        api.dispatch(event("POST", "/v1/agents/member/detections/reconcile", {}), store)
+    for method in ("GET", "POST"):
+        with pytest.raises(FleetError):
+            api.dispatch(event(method, "/v1/agents/member/detections/recover", {}), store)
+    for method in ("GET", "POST"):
+        with pytest.raises(FleetError, match="requires_administrator"):
+            api.dispatch(event(method, "/v1/agents/member/detections/handoff", {}), store)
+
+
 def test_manager_reports_its_security_account_region_and_stage(store):
     code, status = api.dispatch(event("GET", "/v1/status"), store)
     assert code == 200

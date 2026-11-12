@@ -1,4 +1,5 @@
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -9,6 +10,46 @@ from opencdr_fleet.models import (
     public_registration,
     registration,
 )
+from opencdr_fleet.store import Store, _runtime_sdk
+
+
+def test_reused_sdk_connections_still_read_current_registration(store, agent_record):
+    first = Store()
+    second = Store()
+    assert first.client is second.client and first.ddb is second.ddb
+    assert first.get_agent("account-a")["enabled"] is True
+    store.registry.update_item(
+        Key={"id": "AGENT#account-a"},
+        UpdateExpression="SET enabled = :enabled, rev = :rev",
+        ExpressionAttributeValues={":enabled": False, ":rev": 2},
+    )
+    assert second.get_agent("account-a")["enabled"] is False
+    assert first.get_agent("account-a")["rev"] == 2
+
+
+def test_query_store_does_not_construct_unused_service_clients(store):
+    session = MagicMock()
+    scoped = Store(session=session)
+    assert session.client.call_count == 1
+    assert session.client.call_args.args == ("dynamodb",)
+    assert scoped.s3 is scoped.s3
+    assert session.client.call_count == 2
+    assert session.client.call_args.args == ("s3",)
+    assert scoped.client is not Store().client
+
+
+def test_sdk_cache_respects_region_and_explicit_profile(monkeypatch):
+    session = MagicMock()
+    monkeypatch.setattr("opencdr_fleet.store.boto3.Session", session)
+    _runtime_sdk.cache_clear()
+    try:
+        a = _runtime_sdk("us-east-1", "one")
+        assert _runtime_sdk("us-east-1", "one") is a
+        assert _runtime_sdk("us-east-1", "two") is not a
+        assert _runtime_sdk("eu-west-1", "two") is not a
+        assert session.call_count == 3
+    finally:
+        _runtime_sdk.cache_clear()
 
 
 def test_registry_rejects_duplicate_identity_and_stale_updates(store, agent_record):

@@ -52,6 +52,30 @@ def bootstrap(security, core, agent: dict, fleet_stage: str, security_account_id
         raise RuntimeError("Security profile is authenticated to the wrong account")
     if core.client("sts").get_caller_identity()["Account"] != agent["account_id"]:
         raise RuntimeError("Core profile is authenticated to the wrong account")
+    if agent.get("auth_mode", "legacy-api-key") == "iam":
+        stack = security.client("cloudformation").describe_stacks(
+            StackName=f"opencdr-fleet-manager-{fleet_stage}"
+        )["Stacks"][0]
+        outputs = {item["OutputKey"]: item["OutputValue"] for item in stack.get("Outputs", [])}
+        required = [
+            "PollRoleArn",
+            "DetectionPollRoleArn",
+            "ManagementObserverRoleArn",
+            "ManagementOperatorRoleArn",
+            "ManagementResponderRoleArn",
+            "ManagementAdministratorRoleArn",
+            "RolloutOperatorRoleArn",
+            "RolloutResponderRoleArn",
+            "RolloutAdministratorRoleArn",
+        ]
+        if any(key not in outputs for key in required):
+            raise RuntimeError("Upgrade Fleet Manager before IAM onboarding")
+        return {
+            "auth_mode": "iam",
+            "core_parameters": {
+                "managementPrincipalArns": ",".join(outputs[key] for key in required)
+            },
+        }
     host = urlsplit(agent["api_url"]).hostname
     if not re.fullmatch(r"[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?", host):
         raise RuntimeError(
@@ -107,6 +131,10 @@ def main():
             if isinstance(error, RuntimeError)
             else "AWS rejected credential setup; verify profile permissions"
         )
+    if isinstance(names, dict):
+        print(json.dumps(names, indent=2))
+        print("Apply these Core trust parameters, verify signed access, then register the agent.")
+        return
     for name in names:
         print(f"Stored {name}")
     print("Credentials are ready. Register the reviewed file through the fleet API next.")

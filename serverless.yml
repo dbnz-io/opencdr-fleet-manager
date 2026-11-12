@@ -4,18 +4,27 @@ configValidationMode: error
 
 params:
   default:
-    securityAccountId: ${env:SECURITY_ACCOUNT_ID}
+    securityAccountId: ${env:SECURITY_ACCOUNT_ID, aws:accountId}
+    reviewEnforcement: 'true'
     pollingEnabled: 'true'
     securityProfile: standard
     allowedAgentHosts: ''
     snapshotRetentionHours: '24'
     pollConcurrency: 2
+    pollIntervalMinutes: '1'
+    fullRefreshMinutes: '60'
+    detectionPollIntervalMinutes: '1'
+    detectionRetentionDays: '90'
+    detectionPollingEnabled: 'true'
+    detectionPollConcurrency: 2
+    detectionEvidenceBucketName: ''
 
 package:
   artifact: build/fleet-manager.zip
 
 provider:
   name: aws
+  endpointType: REGIONAL
   runtime: python3.12
   architecture: arm64
   stage: ${opt:stage, 'dev'}
@@ -34,15 +43,28 @@ provider:
     Project: opencdr-fleet-manager
     Stage: ${self:provider.stage}
   environment:
+    LIBRARY_TABLE_NAME: !Ref LibraryTable
+    LIBRARY_BUCKET: !Ref LibraryBucket
+    FLEET_REVIEW_ENFORCEMENT: ${param:reviewEnforcement}
+    CASE_TABLE_NAME: !Ref CaseTable
+    CASE_EVIDENCE_BUCKET: !Ref CaseBucket
     SECURITY_ACCOUNT_ID: ${param:securityAccountId}
     FLEET_STAGE: ${self:provider.stage}
+    ROLLOUT_TABLE: !Ref RolloutTable
     REGISTRY_TABLE: !Ref RegistryTable
     STATUS_TABLE: !Ref StatusTable
     CACHE_TABLE: !Ref ConfigurationTable
     CREDENTIAL_PREFIX: /opencdr-fleet-manager/${self:provider.stage}/agents
+    DETECTION_TABLE: !Ref DetectionTable
+    DETECTION_BUCKET: !Ref DetectionBucket
+    DETECTION_QUEUE_URL: !Ref DetectionQueue
+    DETECTION_POLL_INTERVAL_MINUTES: ${param:detectionPollIntervalMinutes}
+    DETECTION_POLLING_ENABLED: ${param:detectionPollingEnabled}
+    DETECTION_RETENTION_DAYS: ${param:detectionRetentionDays}
     POLL_QUEUE_URL: !Ref PollQueue
     SNAPSHOT_RETENTION_HOURS: ${param:snapshotRetentionHours}
-    STALE_AFTER_SECONDS: '180'
+    POLL_INTERVAL_MINUTES: ${param:pollIntervalMinutes}
+    FULL_REFRESH_MINUTES: ${param:fullRefreshMinutes}
     ALLOWED_AGENT_HOSTS: ${param:allowedAgentHosts}
 
 custom:
@@ -66,6 +88,14 @@ custom:
     Effect: Allow
     Action: ssm:GetParameter
     Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/opencdr-fleet-manager/${self:provider.stage}/agents/*/read-key'
+  detectionRead: &detectionRead
+    Effect: Allow
+    Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:BatchGetItem]
+    Resource: [!GetAtt DetectionTable.Arn, !Sub '${DetectionTable.Arn}/index/by-day']
+  sendDetection: &sendDetection
+    Effect: Allow
+    Action: sqs:SendMessage
+    Resource: !GetAtt DetectionQueue.Arn
   sendPoll: &sendPoll
     Effect: Allow
     Action: sqs:SendMessage
@@ -75,17 +105,154 @@ functions:
   api:
     handler: opencdr_fleet.handlers.api
     iamRoleStatements:
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt LibraryTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['FLEET_GROUP#*']
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['FLEET_GROUP#*']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt RegistryTable.Arn
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['REVIEW#*', 'REVIEW_INDEX#*', 'REVIEW_REQUEST#*', 'REVIEW_AUDIT#*', 'REVIEW_POLICY', 'REVIEW_POLICY_VERSION#*', 'REVIEW_GRANT#*', 'REVIEW_GRANT_REQUEST#*', 'REVIEW_GRANT_AUDIT#*', 'REVIEW_EXECUTION#*', 'ROUTING#*', 'ROUTING_ACTIVATION#*', 'ROUTING_DELIVERY#*', 'ROUTING_OUTCOME#*']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt LibraryTable.Arn
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${LibraryBucket.Arn}/library/*'
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt LibraryTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['ITEM', 'IDENTITY#*', 'VERSION#*', 'AUDIT#*', 'REQUEST#*', 'RELEASE', 'TEST#*', 'COMPILE#*', 'MAPPING#*']
+      - Effect: Allow
+        Action: s3:PutObject
+        Resource: !Sub '${LibraryBucket.Arn}/library/*'
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${CaseBucket.Arn}/cases/*'
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['CASE', 'EXTENSION#*', 'AUDIT#*', 'REQUEST#*', 'LINK#*', 'INTEGRATION', 'INTEGRATION_AUDIT#*', 'INTEGRATION_REQUEST#*']
+      - Effect: Allow
+        Action: dynamodb:DeleteItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['LINK#*']
+      - Effect: Allow
+        Action: s3:PutObject
+        Resource: !Sub '${CaseBucket.Arn}/cases/*'
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['ACCESS', 'ACCESS_AUDIT#*', 'ACCESS_REQUEST#*', 'IDENTITY_ISSUER', 'IDENTITY_SUBJECT', 'IDENTITY_TRANSPORT', 'IDENTITY_AUDIT#*', 'IDENTITY_REQUEST#*']
+      - Effect: Allow
+        Action: dynamodb:UpdateItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['IDENTITY_AUTHORITY']
       - *registryWrite
       - *statusRead
+      - *detectionRead
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${DetectionBucket.Arn}/detections/*'
+      - Effect: Allow
+        Action: dynamodb:GetItem
+        Resource: !GetAtt RolloutTable.Arn
       - Effect: Allow
         Action: [dynamodb:GetItem, dynamodb:Query]
         Resource: !GetAtt ConfigurationTable.Arn
       - *secretsRead
       - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/observer/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/delivery/detections/consumers/subscriber-*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/delivery/detections/consumers/subscriber-*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/observer/delegated'
+      - Effect: Allow
         Action: ssm:GetParameter
         Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/opencdr-fleet-manager/${self:provider.stage}/agents/*/write-key'
       - *sendPoll
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt DetectionTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['RECONCILIATION#*', 'HANDOFF#*']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt DetectionTable.Arn
+      - Effect: Allow
+        Action: sqs:SendMessage
+        Resource: !GetAtt DetectionQueue.Arn
+
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/PUT/management/triage/detections/handling'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/triage/delegated'
     events:
+      - http: {path: 'v1/cases', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/cases', method: post, authorizer: aws_iam}
+      - http: {path: 'v1/case-access', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/case-access', method: put, authorizer: aws_iam}
+      - http: {path: 'v1/cases/{case_id}', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/cases/{case_id}', method: put, authorizer: aws_iam}
+      - http: {path: 'v1/cases/{case_id}/notes', method: post, authorizer: aws_iam}
+      - http: {path: 'v1/cases/{case_id}/detections', method: post, authorizer: aws_iam}
+      - http: {path: 'v1/cases/{case_id}/detections/detach', method: post, authorizer: aws_iam}
+      - http: {path: 'v1/cases/{case_id}/history', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/cases/{case_id}/evidence', method: get, authorizer: aws_iam}
+      - http: {path: v1/detections, method: get, authorizer: aws_iam}
+      - http: {path: v1/detections/detail, method: get, authorizer: aws_iam}
+      - http: {path: v1/detections/summary, method: get, authorizer: aws_iam}
+      - http: {path: v1/cases/active, method: get, authorizer: aws_iam}
+      - http: {path: 'v1/case-integrations/{integration_id}', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/case-integrations/{integration_id}', method: put, authorizer: aws_iam}
+      - http: {path: 'v1/library/{proxy+}', method: any, authorizer: aws_iam}
       - http: {path: v1/status, method: get, authorizer: aws_iam}
       - http: {path: v1/statuses, method: get, authorizer: aws_iam}
       - http: {path: v1/agents, method: get, authorizer: aws_iam}
@@ -93,10 +260,621 @@ functions:
       - http: {path: 'v1/agents/{agent_id}', method: get, authorizer: aws_iam}
       - http: {path: 'v1/agents/{agent_id}', method: put, authorizer: aws_iam}
       - http: {path: 'v1/agents/{agent_id}/refresh', method: post, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/detections/outcomes', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/detections/outcomes/history', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/detections/handling', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/detections/handling', method: put, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/detections/handling/history', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/detections/status', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/detections/reconcile', method: post, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/detections/recover', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/detections/recover', method: post, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/detections/handoff', method: get, authorizer: aws_iam}
+      - http: {path: 'v1/agents/{agent_id}/detections/handoff', method: post, authorizer: aws_iam}
       - http: {path: 'v1/agents/{agent_id}/configuration', method: get, authorizer: aws_iam}
       - http: {path: 'v1/agents/{agent_id}/api/{proxy+}', method: any, authorizer: aws_iam}
       - http: {path: v1/fleet/read, method: post, authorizer: aws_iam}
       - http: {path: v1/fleet/invoke, method: post, authorizer: aws_iam}
+  managementIntegration:
+    handler: opencdr_fleet.handlers.api
+    environment: {FLEET_MANAGEMENT_ACCESS: integration}
+    iamRoleStatements:
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['CASE', 'AUDIT#*', 'REQUEST#*']
+    events:
+      - http: {path: 'management/integration/{proxy+}', method: any, authorizer: aws_iam}
+
+  managementTriage:
+    handler: opencdr_fleet.handlers.api
+    environment: {FLEET_MANAGEMENT_ACCESS: triage}
+    iamRoleStatements:
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt LibraryTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt LibraryTable.Arn
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${LibraryBucket.Arn}/library/*'
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${CaseBucket.Arn}/cases/*'
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['CASE', 'EXTENSION#*', 'AUDIT#*', 'REQUEST#*', 'LINK#*']
+      - Effect: Allow
+        Action: dynamodb:DeleteItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['LINK#*']
+      - Effect: Allow
+        Action: s3:PutObject
+        Resource: !Sub '${CaseBucket.Arn}/cases/*'
+      - *registryRead
+      - *statusRead
+      - *detectionRead
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${DetectionBucket.Arn}/detections/*'
+      - Effect: Allow
+        Action: dynamodb:GetItem
+        Resource: !GetAtt RolloutTable.Arn
+      - *secretsRead
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query]
+        Resource: !GetAtt ConfigurationTable.Arn
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/observer/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/delivery/detections/consumers/subscriber-*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/delivery/detections/consumers/subscriber-*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/observer/delegated'
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/PUT/management/triage/detections/handling'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/triage/delegated'
+      - Effect: Allow
+        Action: sqs:SendMessage
+        Resource: !GetAtt DetectionQueue.Arn
+    events:
+      - http: {path: 'management/triage/{proxy+}', method: any, authorizer: aws_iam}
+  managementObserver:
+    handler: opencdr_fleet.handlers.api
+    environment: {FLEET_MANAGEMENT_ACCESS: observer}
+    iamRoleStatements:
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt LibraryTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt LibraryTable.Arn
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${LibraryBucket.Arn}/library/*'
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${CaseBucket.Arn}/cases/*'
+      - *registryRead
+      - *statusRead
+      - *detectionRead
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${DetectionBucket.Arn}/detections/*'
+      - Effect: Allow
+        Action: dynamodb:GetItem
+        Resource: !GetAtt RolloutTable.Arn
+      - *secretsRead
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query]
+        Resource: !GetAtt ConfigurationTable.Arn
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/observer/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/delivery/detections/consumers/subscriber-*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/delivery/detections/consumers/subscriber-*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/observer/delegated'
+    events:
+      - http: {path: 'management/observer/{proxy+}', method: any, authorizer: aws_iam}
+  managementOperator:
+    handler: opencdr_fleet.handlers.api
+    environment:
+      FLEET_MANAGEMENT_ACCESS: operator
+      ROLLOUT_QUEUE_URL: !Ref RolloutOperatorQueue
+    iamRoleStatements:
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt LibraryTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['FLEET_GROUP#*']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt DetectionTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['AGENT#*']
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['FLEET_GROUP#*']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt RegistryTable.Arn
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['REVIEW#*', 'REVIEW_INDEX#*', 'REVIEW_REQUEST#*', 'REVIEW_AUDIT#*', 'REVIEW_EXECUTION#*', 'ROUTING#*', 'ROUTING_ACTIVATION#*', 'ROUTING_DELIVERY#*', 'ROUTING_OUTCOME#*']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt LibraryTable.Arn
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${LibraryBucket.Arn}/library/*'
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt LibraryTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['ITEM', 'IDENTITY#*', 'VERSION#*', 'AUDIT#*', 'REQUEST#*', 'RELEASE', 'TEST#*', 'COMPILE#*', 'MAPPING#*']
+      - Effect: Allow
+        Action: s3:PutObject
+        Resource: !Sub '${LibraryBucket.Arn}/library/*'
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${CaseBucket.Arn}/cases/*'
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['CASE', 'EXTENSION#*', 'AUDIT#*', 'REQUEST#*', 'LINK#*']
+      - Effect: Allow
+        Action: dynamodb:DeleteItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['LINK#*']
+      - Effect: Allow
+        Action: s3:PutObject
+        Resource: !Sub '${CaseBucket.Arn}/cases/*'
+      - *registryRead
+      - *statusRead
+      - *detectionRead
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${DetectionBucket.Arn}/detections/*'
+      - Effect: Allow
+        Action: dynamodb:GetItem
+        Resource: !GetAtt RolloutTable.Arn
+      - *sendPoll
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query]
+        Resource: !GetAtt ConfigurationTable.Arn
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/observer/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/delivery/detections/consumers/subscriber-*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/delivery/detections/consumers/subscriber-*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/observer/delegated'
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/*/management/operator/*'
+      - Effect: Allow
+        Action: [dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:BatchWriteItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt RolloutTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['operator-*']
+      - Effect: Allow
+        Action: sqs:SendMessage
+        Resource: !GetAtt RolloutOperatorQueue.Arn
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/PUT/management/triage/detections/handling'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/triage/delegated'
+      - Effect: Allow
+        Action: sqs:SendMessage
+        Resource: !GetAtt DetectionQueue.Arn
+    events:
+      - http: {path: 'management/operator/{proxy+}', method: any, authorizer: aws_iam}
+  managementResponder:
+    handler: opencdr_fleet.handlers.api
+    environment:
+      FLEET_MANAGEMENT_ACCESS: responder
+      ROLLOUT_QUEUE_URL: !Ref RolloutResponderQueue
+    iamRoleStatements:
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt LibraryTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['FLEET_GROUP#*']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt DetectionTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['AGENT#*']
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['FLEET_GROUP#*']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt RegistryTable.Arn
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['REVIEW#*', 'REVIEW_INDEX#*', 'REVIEW_REQUEST#*', 'REVIEW_AUDIT#*', 'REVIEW_EXECUTION#*', 'ROUTING#*', 'ROUTING_ACTIVATION#*', 'ROUTING_DELIVERY#*', 'ROUTING_OUTCOME#*']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt LibraryTable.Arn
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${LibraryBucket.Arn}/library/*'
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt LibraryTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['ITEM', 'IDENTITY#*', 'VERSION#*', 'AUDIT#*', 'REQUEST#*', 'RELEASE', 'TEST#*', 'COMPILE#*', 'MAPPING#*']
+      - Effect: Allow
+        Action: s3:PutObject
+        Resource: !Sub '${LibraryBucket.Arn}/library/*'
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${CaseBucket.Arn}/cases/*'
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['CASE', 'EXTENSION#*', 'AUDIT#*', 'REQUEST#*', 'LINK#*']
+      - Effect: Allow
+        Action: dynamodb:DeleteItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['LINK#*']
+      - Effect: Allow
+        Action: s3:PutObject
+        Resource: !Sub '${CaseBucket.Arn}/cases/*'
+      - *registryRead
+      - *statusRead
+      - *detectionRead
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${DetectionBucket.Arn}/detections/*'
+      - Effect: Allow
+        Action: dynamodb:GetItem
+        Resource: !GetAtt RolloutTable.Arn
+      - *sendPoll
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query]
+        Resource: !GetAtt ConfigurationTable.Arn
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/observer/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/delivery/detections/consumers/subscriber-*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/delivery/detections/consumers/subscriber-*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/observer/delegated'
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/*/management/operator/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/*/management/responder/*'
+      - Effect: Allow
+        Action: [dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:BatchWriteItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt RolloutTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['responder-*']
+      - Effect: Allow
+        Action: sqs:SendMessage
+        Resource: !GetAtt RolloutResponderQueue.Arn
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/PUT/management/triage/detections/handling'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/triage/delegated'
+      - Effect: Allow
+        Action: sqs:SendMessage
+        Resource: !GetAtt DetectionQueue.Arn
+    events:
+      - http: {path: 'management/responder/{proxy+}', method: any, authorizer: aws_iam}
+  managementAdministrator:
+    handler: opencdr_fleet.handlers.api
+    environment:
+      FLEET_MANAGEMENT_ACCESS: administrator
+      ROLLOUT_QUEUE_URL: !Ref RolloutAdministratorQueue
+    iamRoleStatements:
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt LibraryTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['FLEET_GROUP#*']
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt ConfigurationTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['FLEET_GROUP#*']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt RegistryTable.Arn
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['REVIEW#*', 'REVIEW_INDEX#*', 'REVIEW_REQUEST#*', 'REVIEW_AUDIT#*', 'REVIEW_POLICY', 'REVIEW_POLICY_VERSION#*', 'REVIEW_GRANT#*', 'REVIEW_GRANT_REQUEST#*', 'REVIEW_GRANT_AUDIT#*', 'REVIEW_EXECUTION#*', 'ROUTING#*', 'ROUTING_ACTIVATION#*', 'ROUTING_DELIVERY#*', 'ROUTING_OUTCOME#*']
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt LibraryTable.Arn
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${LibraryBucket.Arn}/library/*'
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt LibraryTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['ITEM', 'IDENTITY#*', 'VERSION#*', 'AUDIT#*', 'REQUEST#*', 'RELEASE', 'TEST#*', 'COMPILE#*', 'MAPPING#*']
+      - Effect: Allow
+        Action: s3:PutObject
+        Resource: !Sub '${LibraryBucket.Arn}/library/*'
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${CaseBucket.Arn}/cases/*'
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['CASE', 'EXTENSION#*', 'AUDIT#*', 'REQUEST#*', 'LINK#*', 'INTEGRATION', 'INTEGRATION_AUDIT#*', 'INTEGRATION_REQUEST#*']
+      - Effect: Allow
+        Action: dynamodb:DeleteItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['LINK#*']
+      - Effect: Allow
+        Action: s3:PutObject
+        Resource: !Sub '${CaseBucket.Arn}/cases/*'
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['ACCESS', 'ACCESS_AUDIT#*', 'ACCESS_REQUEST#*', 'IDENTITY_ISSUER', 'IDENTITY_SUBJECT', 'IDENTITY_TRANSPORT', 'IDENTITY_AUDIT#*', 'IDENTITY_REQUEST#*']
+      - Effect: Allow
+        Action: dynamodb:UpdateItem
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['IDENTITY_AUTHORITY']
+      - *registryWrite
+      - *statusRead
+      - *detectionRead
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${DetectionBucket.Arn}/detections/*'
+      - Effect: Allow
+        Action: dynamodb:GetItem
+        Resource: !GetAtt RolloutTable.Arn
+      - *sendPoll
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:Query]
+        Resource: !GetAtt ConfigurationTable.Arn
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/observer/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/delivery/detections/consumers/subscriber-*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/delivery/detections/consumers/subscriber-*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/observer/delegated'
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/*/management/operator/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/*/management/responder/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/*/management/administrator/*'
+      - Effect: Allow
+        Action: [dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:BatchWriteItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt RolloutTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['administrator-*']
+      - Effect: Allow
+        Action: sqs:SendMessage
+        Resource: !GetAtt RolloutAdministratorQueue.Arn
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt DetectionTable.Arn
+      - Effect: Allow
+        Action: sqs:SendMessage
+        Resource: !GetAtt DetectionQueue.Arn
+
+      - Effect: Allow
+        Action: dynamodb:PutItem
+        Resource: !GetAtt DetectionTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['RECONCILIATION#*', 'HANDOFF#*']
+
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/PUT/management/triage/detections/handling'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/triage/delegated'
+    events:
+      - http: {path: 'management/administrator/{proxy+}', method: any, authorizer: aws_iam}
+  detectionSchedule:
+    handler: opencdr_fleet.handlers.detection_schedule
+    timeout: 55
+    iamRoleStatements: [*registryRead, *sendDetection]
+    events:
+      - schedule:
+          rate: rate(1 minute)
+          enabled: ${strToBool(${param:detectionPollingEnabled})}
+  detectionPoll:
+    handler: opencdr_fleet.handlers.detection_worker
+    timeout: 55
+    iamRoleStatements:
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:UpdateItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt RegistryTable.Arn
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt DetectionTable.Arn
+      - Effect: Allow
+        Action: s3:PutObject
+        Resource: !Sub '${DetectionBucket.Arn}/detections/*'
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/observer/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/delivery/detections/consumers/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/delivery/detections/consumers/*'
+    events:
+      - sqs:
+          arn: !GetAtt DetectionQueue.Arn
+          batchSize: 1
+          maximumConcurrency: ${param:detectionPollConcurrency}
+          functionResponseType: ReportBatchItemFailures
   schedule:
     handler: opencdr_fleet.handlers.schedule
     timeout: 55
@@ -111,7 +889,19 @@ functions:
     iamRoleStatements:
       - *registryWrite
       - *statusRead
+      - *detectionRead
+      - Effect: Allow
+        Action: s3:GetObject
+        Resource: !Sub '${DetectionBucket.Arn}/detections/*'
+      - Effect: Allow
+        Action: dynamodb:GetItem
+        Resource: !GetAtt RolloutTable.Arn
       - *secretsRead
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/observer/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/POST/management/observer/delegated'
       - Effect: Allow
         Action: dynamodb:PutItem
         Resource: !GetAtt StatusTable.Arn
@@ -125,10 +915,378 @@ functions:
           maximumConcurrency: ${param:pollConcurrency}
           functionResponseType: ReportBatchItemFailures
 
+  rolloutOperator:
+    handler: opencdr_fleet.handlers.rollout_worker
+    timeout: 55
+    environment: {FLEET_MANAGEMENT_ACCESS: operator}
+    iamRoleStatements:
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt RegistryTable.Arn
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['REVIEW_POLICY', 'REVIEW#*', 'REVIEW_GRANT#*', 'IDENTITY_SUBJECT', 'IDENTITY_ISSUER', 'IDENTITY_AUTHORITY']
+      - *registryRead
+      - Effect: Allow
+        Action: dynamodb:GetItem
+        Resource: !GetAtt RolloutTable.Arn
+      - Effect: Allow
+        Action: [dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:BatchWriteItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt RolloutTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['operator-*']
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/observer/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/*/management/operator/*'
+    events:
+      - sqs:
+          arn: !GetAtt RolloutOperatorQueue.Arn
+          batchSize: 1
+          maximumConcurrency: 2
+          functionResponseType: ReportBatchItemFailures
+  rolloutResponder:
+    handler: opencdr_fleet.handlers.rollout_worker
+    timeout: 55
+    environment: {FLEET_MANAGEMENT_ACCESS: responder}
+    iamRoleStatements:
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt RegistryTable.Arn
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['REVIEW_POLICY', 'REVIEW#*', 'REVIEW_GRANT#*', 'IDENTITY_SUBJECT', 'IDENTITY_ISSUER', 'IDENTITY_AUTHORITY']
+      - *registryRead
+      - Effect: Allow
+        Action: dynamodb:GetItem
+        Resource: !GetAtt RolloutTable.Arn
+      - Effect: Allow
+        Action: [dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:BatchWriteItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt RolloutTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['responder-*']
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/observer/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/*/management/responder/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/*/management/operator/*'
+    events:
+      - sqs:
+          arn: !GetAtt RolloutResponderQueue.Arn
+          batchSize: 1
+          maximumConcurrency: 2
+          functionResponseType: ReportBatchItemFailures
+  rolloutAdministrator:
+    handler: opencdr_fleet.handlers.rollout_worker
+    timeout: 55
+    environment: {FLEET_MANAGEMENT_ACCESS: administrator}
+    iamRoleStatements:
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringEquals:
+            dynamodb:LeadingKeys: ['OWNERSHIP']
+      - Effect: Allow
+        Action: dynamodb:ConditionCheckItem
+        Resource: !GetAtt RegistryTable.Arn
+      - Effect: Allow
+        Action: [dynamodb:GetItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt CaseTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['REVIEW_POLICY', 'REVIEW#*', 'REVIEW_GRANT#*', 'IDENTITY_SUBJECT', 'IDENTITY_ISSUER', 'IDENTITY_AUTHORITY']
+      - *registryRead
+      - Effect: Allow
+        Action: dynamodb:GetItem
+        Resource: !GetAtt RolloutTable.Arn
+      - Effect: Allow
+        Action: [dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:BatchWriteItem, dynamodb:ConditionCheckItem]
+        Resource: !GetAtt RolloutTable.Arn
+        Condition:
+          ForAllValues:StringLike:
+            dynamodb:LeadingKeys: ['administrator-*']
+      - Effect: Allow
+        Action: execute-api:Invoke
+        Resource:
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/GET/management/observer/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/*/management/administrator/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/*/management/operator/*'
+          - !Sub 'arn:${AWS::Partition}:execute-api:*:*:*/*/*/management/responder/*'
+    events:
+      - sqs:
+          arn: !GetAtt RolloutAdministratorQueue.Arn
+          batchSize: 1
+          maximumConcurrency: 2
+          functionResponseType: ReportBatchItemFailures
+
 resources:
+  extensions:
+    DetectionScheduleEventsRuleSchedule1:
+      Properties:
+        ScheduleExpression:
+          Fn::If: [DetectionPollEveryMinute, 'rate(1 minute)', 'rate(${param:detectionPollIntervalMinutes} minutes)']
+    ScheduleEventsRuleSchedule1:
+      Properties:
+        ScheduleExpression:
+          Fn::If: [PollEveryMinute, 'rate(1 minute)', 'rate(${param:pollIntervalMinutes} minutes)']
   Conditions:
+    HasPinnedDetectionBucket: !Not [!Equals ['${param:detectionEvidenceBucketName}', '']]
+    DetectionPollEveryMinute: !Equals ['${param:detectionPollIntervalMinutes}', '1']
     Hardened: !Equals ['${param:securityProfile}', hardened]
+    PollEveryMinute: !Equals ['${param:pollIntervalMinutes}', '1']
   Resources:
+    LibraryTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-library
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions: [{AttributeName: pk, AttributeType: S}, {AttributeName: sk, AttributeType: S}]
+        KeySchema: [{AttributeName: pk, KeyType: HASH}, {AttributeName: sk, KeyType: RANGE}]
+        PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+        SSESpecification: {SSEEnabled: true}
+    LibraryBucket:
+      Type: AWS::S3::Bucket
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        VersioningConfiguration: {Status: Enabled}
+        OwnershipControls: {Rules: [{ObjectOwnership: BucketOwnerEnforced}]}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          IgnorePublicAcls: true
+          BlockPublicPolicy: true
+          RestrictPublicBuckets: true
+        BucketEncryption:
+          ServerSideEncryptionConfiguration: [{ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}}]
+    LibraryBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: !Ref LibraryBucket
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Deny
+              Principal: '*'
+              Action: 's3:*'
+              Resource: [!GetAtt LibraryBucket.Arn, !Sub '${LibraryBucket.Arn}/*']
+              Condition: {Bool: {'aws:SecureTransport': false}}
+    CaseTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-cases
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions: [{AttributeName: pk, AttributeType: S}, {AttributeName: sk, AttributeType: S}]
+        KeySchema: [{AttributeName: pk, KeyType: HASH}, {AttributeName: sk, KeyType: RANGE}]
+        PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+        SSESpecification: {SSEEnabled: true}
+    CaseBucket:
+      Type: AWS::S3::Bucket
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        VersioningConfiguration: {Status: Enabled}
+        OwnershipControls: {Rules: [{ObjectOwnership: BucketOwnerEnforced}]}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          IgnorePublicAcls: true
+          BlockPublicPolicy: true
+          RestrictPublicBuckets: true
+        BucketEncryption:
+          ServerSideEncryptionConfiguration: [{ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}}]
+    CaseBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: !Ref CaseBucket
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Deny
+              Principal: '*'
+              Action: 's3:*'
+              Resource: [!GetAtt CaseBucket.Arn, !Sub '${CaseBucket.Arn}/*']
+              Condition: {Bool: {'aws:SecureTransport': false}}
+    DetectionTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-detections
+        BillingMode: PAY_PER_REQUEST
+        SSESpecification: {SSEEnabled: true}
+        PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+        TimeToLiveSpecification: {AttributeName: expires_at, Enabled: true}
+        AttributeDefinitions:
+          - {AttributeName: pk, AttributeType: S}
+          - {AttributeName: sk, AttributeType: S}
+          - {AttributeName: day, AttributeType: S}
+          - {AttributeName: order, AttributeType: S}
+        KeySchema: [{AttributeName: pk, KeyType: HASH}, {AttributeName: sk, KeyType: RANGE}]
+        GlobalSecondaryIndexes:
+          - IndexName: by-day
+            KeySchema: [{AttributeName: day, KeyType: HASH}, {AttributeName: order, KeyType: RANGE}]
+            Projection:
+              ProjectionType: INCLUDE
+              NonKeyAttributes: [agent_id, account_id, region, stage, detection_id, kind, committed_at, revision, summary, expires_at]
+    DetectionBucket:
+      Type: AWS::S3::Bucket
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        BucketName: !If [HasPinnedDetectionBucket, '${param:detectionEvidenceBucketName}', !Ref 'AWS::NoValue']
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        OwnershipControls:
+          Rules: [{ObjectOwnership: BucketOwnerEnforced}]
+        LifecycleConfiguration:
+          Rules:
+            - Id: DetectionEvidenceRetention
+              Status: Enabled
+              Prefix: detections/
+              ExpirationInDays: ${param:detectionRetentionDays}
+              AbortIncompleteMultipartUpload: {DaysAfterInitiation: 1}
+    DetectionBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: !Ref DetectionBucket
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Deny
+              Principal: '*'
+              Action: 's3:*'
+              Resource: [!GetAtt DetectionBucket.Arn, !Sub '${DetectionBucket.Arn}/*']
+              Condition: {Bool: {'aws:SecureTransport': 'false'}}
+    DetectionQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        VisibilityTimeout: 360
+        MessageRetentionPeriod: 3600
+        SqsManagedSseEnabled: true
+        RedrivePolicy: {deadLetterTargetArn: !GetAtt DetectionDeadLetterQueue.Arn, maxReceiveCount: 3}
+    DetectionDeadLetterQueue:
+      Type: AWS::SQS::Queue
+      Properties: {MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true}
+    DetectionDeadLetterAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Detection receipt failed. Inspect retained checkpoints before replay.
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Dimensions: [{Name: QueueName, Value: !GetAtt DetectionDeadLetterQueue.QueueName}]
+        Statistic: Maximum
+        Period: 60
+        EvaluationPeriods: 1
+        Threshold: 0
+        ComparisonOperator: GreaterThanThreshold
+        TreatMissingData: notBreaching
+    DetectionCollectionFailureAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: A Core feed failed validation or delivery. Inspect per-agent collection status.
+        Namespace: OpenCDR/Fleet
+        MetricName: DetectionCollectionFailures
+        Dimensions: [{Name: Stage, Value: '${self:provider.stage}'}]
+        Statistic: Sum
+        Period: 60
+        EvaluationPeriods: 2
+        Threshold: 0
+        ComparisonOperator: GreaterThanThreshold
+        TreatMissingData: notBreaching
+    DetectionRetentionGapAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: A detection consumer needs explicit backfill or reconciliation. Do not reset its checkpoint blindly.
+        Namespace: OpenCDR/Fleet
+        MetricName: DetectionRetentionGaps
+        Dimensions: [{Name: Stage, Value: '${self:provider.stage}'}]
+        Statistic: Sum
+        Period: 60
+        EvaluationPeriods: 1
+        Threshold: 0
+        ComparisonOperator: GreaterThanThreshold
+        TreatMissingData: notBreaching
+    DetectionLagAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Detection queue age exceeds the collection freshness budget.
+        Namespace: AWS/SQS
+        MetricName: ApproximateAgeOfOldestMessage
+        Dimensions: [{Name: QueueName, Value: !GetAtt DetectionQueue.QueueName}]
+        Statistic: Maximum
+        Period: 60
+        EvaluationPeriods: 2
+        Threshold: 120
+        ComparisonOperator: GreaterThanThreshold
+        TreatMissingData: notBreaching
+    RolloutTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:service}-${self:provider.stage}-rollouts
+        BillingMode: PAY_PER_REQUEST
+        SSESpecification: {SSEEnabled: true}
+        PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+        TimeToLiveSpecification: {AttributeName: expires_at, Enabled: true}
+        AttributeDefinitions: [{AttributeName: pk, AttributeType: S}, {AttributeName: sk, AttributeType: S}]
+        KeySchema: [{AttributeName: pk, KeyType: HASH}, {AttributeName: sk, KeyType: RANGE}]
+    RolloutOperatorQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        VisibilityTimeout: 360
+        MessageRetentionPeriod: 3600
+        SqsManagedSseEnabled: true
+        RedrivePolicy: {deadLetterTargetArn: !GetAtt RolloutDeadLetterQueue.Arn, maxReceiveCount: 3}
+    RolloutResponderQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        VisibilityTimeout: 360
+        MessageRetentionPeriod: 3600
+        SqsManagedSseEnabled: true
+        RedrivePolicy: {deadLetterTargetArn: !GetAtt RolloutDeadLetterQueue.Arn, maxReceiveCount: 3}
+    RolloutAdministratorQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        VisibilityTimeout: 360
+        MessageRetentionPeriod: 3600
+        SqsManagedSseEnabled: true
+        RedrivePolicy: {deadLetterTargetArn: !GetAtt RolloutDeadLetterQueue.Arn, maxReceiveCount: 3}
+    RolloutDeadLetterQueue:
+      Type: AWS::SQS::Queue
+      Properties: {MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true}
     RegistryTable:
       Type: AWS::DynamoDB::Table
       DeletionPolicy: Retain
@@ -207,8 +1365,42 @@ resources:
         ComparisonOperator: GreaterThanThreshold
         TreatMissingData: notBreaching
   Outputs:
+    LibraryTableName:
+      Value: !Ref LibraryTable
+    LibraryBucketName:
+      Value: !Ref LibraryBucket
+    CaseTableName:
+      Value: !Ref CaseTable
+    CaseEvidenceBucketName:
+      Value: !Ref CaseBucket
     FleetManagerApiUrl:
       Value: !Sub 'https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${self:provider.stage}'
+    DetectionPollRoleArn:
+      Value: !GetAtt DetectionPollIamRoleLambdaExecution.Arn
+    DetectionEvidenceBucket:
+      Value: !Ref DetectionBucket
+    PollRoleArn:
+      Value: !GetAtt PollIamRoleLambdaExecution.Arn
+    ApiRoleArn:
+      Value: !GetAtt ApiIamRoleLambdaExecution.Arn
+    ManagementIntegrationRoleArn:
+      Value: !GetAtt ManagementIntegrationIamRoleLambdaExecution.Arn
+    ManagementTriageRoleArn:
+      Value: !GetAtt ManagementTriageIamRoleLambdaExecution.Arn
+    ManagementObserverRoleArn:
+      Value: !GetAtt ManagementObserverIamRoleLambdaExecution.Arn
+    ManagementOperatorRoleArn:
+      Value: !GetAtt ManagementOperatorIamRoleLambdaExecution.Arn
+    ManagementResponderRoleArn:
+      Value: !GetAtt ManagementResponderIamRoleLambdaExecution.Arn
+    ManagementAdministratorRoleArn:
+      Value: !GetAtt ManagementAdministratorIamRoleLambdaExecution.Arn
+    RolloutOperatorRoleArn:
+      Value: !GetAtt RolloutOperatorIamRoleLambdaExecution.Arn
+    RolloutResponderRoleArn:
+      Value: !GetAtt RolloutResponderIamRoleLambdaExecution.Arn
+    RolloutAdministratorRoleArn:
+      Value: !GetAtt RolloutAdministratorIamRoleLambdaExecution.Arn
     FleetManagerApiId: {Value: !Ref ApiGatewayRestApi}
     SecurityAccountId: {Value: !Ref AWS::AccountId}
     AgentCredentialPrefix: {Value: '/opencdr-fleet-manager/${self:provider.stage}/agents'}

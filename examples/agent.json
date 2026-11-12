@@ -7,6 +7,10 @@
   "api_url": "https://replace-me.execute-api.us-east-1.amazonaws.com/prod",
   "enabled": true,
   "allow_writes": false,
-  "settings_ids": ["global"],
-  "integration_ids": []
+  "settings_ids": [
+    "global"
+  ],
+  "integration_ids": [],
+  "auth_mode": "iam",
+  "write_access": "operator"
 }
